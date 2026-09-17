@@ -112,7 +112,7 @@ export const LiquidGlassCard = ({
       />
       <div className="absolute inset-0 z-10" style={{ borderRadius, boxShadow: glowStyles[glowIntensity] }} />
       <div className="absolute inset-0 z-20" style={{ borderRadius, boxShadow: shadowStyles[shadowIntensity] }} />
-      <div className="relative z-30">{children}</div>
+      <div className="relative z-30 h-full w-full">{children}</div>
     </motion.div>
   );
 };

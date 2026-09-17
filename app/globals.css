@@ -156,6 +156,18 @@
   ::-webkit-scrollbar-thumb:hover {
     background: linear-gradient(180deg, #fff176, #d946ef, #67e8f9);
   }
+
+  /* Fix browser autofill background override */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus,
+  input:-webkit-autofill:active {
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: #ffffff !important;
+    transition: background-color 50000s ease-in-out 0s;
+    box-shadow: 0 0 0px 1000px rgba(0, 0, 0, 0.75) inset !important;
+    -webkit-box-shadow: 0 0 0px 1000px rgba(0, 0, 0, 0.75) inset !important;
+  }
 }
 
 @layer components {

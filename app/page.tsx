@@ -1,8 +1,9 @@
+import NextLink from "next/link";
 import {
   Gamepad2,
   GitBranch,
   Globe2,
-  Link,
+  Link as LinkIcon,
   Mail,
   MessageCircle,
   Mic,
@@ -64,6 +65,7 @@ function SectionCard({
     </LiquidGlassCard>
   );
 }
+
 function RoomPreview() {
   return (
     <div className="relative h-44 overflow-hidden rounded-xl border border-white/15 bg-[#16042e]/70 shadow-2xl sm:h-52 lg:h-54">
@@ -105,8 +107,9 @@ export default function Home() {
     <main className="relative min-h-svh overflow-x-hidden bg-black text-white">
       <div className="fixed inset-0 z-0 bg-black">
         <SplashCursor
-          SIM_RESOLUTION={128}
-          DYE_RESOLUTION={1024}
+          SIM_RESOLUTION={64}
+          DYE_RESOLUTION={512}
+          PRESSURE_ITERATIONS={8}
           DENSITY_DISSIPATION={3.5}
           VELOCITY_DISSIPATION={2}
           PRESSURE={0.1}
@@ -136,9 +139,11 @@ export default function Home() {
                 </a>
               ))}
             </div>
-            <LiquidButton variant="gold" size="lg" className="bg-yellow-300/95 px-7 font-black shadow-[0_0_24px_rgba(253,224,71,0.22)]">
-              Launch
-            </LiquidButton>
+            <NextLink href="/welcome">
+              <LiquidButton variant="gold" size="lg" className="bg-yellow-300/95 px-7 font-black shadow-[0_0_24px_rgba(253,224,71,0.22)]">
+                Launch
+              </LiquidButton>
+            </NextLink>
           </nav>
         </SectionCard>
 
@@ -154,9 +159,11 @@ export default function Home() {
               SyncSpace is a browser-based room where friends watch videos together, talk, chat, react, and stay perfectly in sync from one invite link.
             </p>
             <div className="mt-5 flex flex-col gap-3 sm:flex-row">
-              <LiquidButton variant="gold" size="xl" className="bg-yellow-300/95 px-8 font-black shadow-[0_0_28px_rgba(253,224,71,0.25)]">
-                Launch SyncSpace
-              </LiquidButton>
+              <NextLink href="/welcome">
+                <LiquidButton variant="gold" size="xl" className="bg-yellow-300/95 px-8 font-black shadow-[0_0_28px_rgba(253,224,71,0.25)]">
+                  Launch SyncSpace
+                </LiquidButton>
+              </NextLink>
               <LiquidButton size="xl" className="border border-white/25 bg-white/10 px-8 font-bold text-white shadow-[0_0_22px_rgba(255,255,255,0.08)]">
                 Explore Rooms
               </LiquidButton>
@@ -182,7 +189,7 @@ export default function Home() {
         <section className="grid items-center gap-6 lg:grid-cols-[0.9fr_1.1fr]">
           <SectionCard className="p-4">
             <div className="grid h-52 grid-cols-3 gap-2.5 rounded-xl bg-black/25 p-3">
-              {[Play, MessageCircle, Users, Upload, Link, Smile].map((Icon, index) => (
+              {[Play, MessageCircle, Users, Upload, LinkIcon, Smile].map((Icon, index) => (
                 <div key={index} className="flex flex-col items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/10 text-center text-[11px] font-bold text-white/80">
                   <Icon className="size-6 text-yellow-200" />
                   {index === 0 && "Video"}
@@ -233,7 +240,7 @@ export default function Home() {
                 <div key={item} className="absolute right-6 flex items-center gap-2 rounded-full border border-white/15 bg-violet-500/35 px-3 py-2 text-xs font-bold" style={{ top: 28 + index * 50 }}>
                   {index === 0 && <MonitorUp className="size-5" />}
                   {index === 1 && <Upload className="size-5" />}
-                  {index === 2 && <Link className="size-5" />}
+                  {index === 2 && <LinkIcon className="size-5" />}
                   {item}
                 </div>
               ))}
@@ -354,36 +361,3 @@ export default function Home() {
     </main>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

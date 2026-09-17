@@ -1,0 +1,67 @@
+========================================================================================
+                      SYNCSPACE PROJECT - TEAM ROLES & RESPONSIBILITIES
+========================================================================================
+Project Name : SyncSpace (Real-Time Virtual Watch Party & Collaborative Platform)
+Institution  : Department of Computer Engineering, CHARUSAT University
+Team Size    : 5 Members
+========================================================================================
+
+----------------------------------------------------------------------------------------
+MEMBER 1: TEAM LEAD & LEAD FULL-STACK ENGINEER (Ayush Makvana)
+----------------------------------------------------------------------------------------
+Role Title : Project Lead & Core Full-Stack Developer
+Key Responsibilities:
+  • Overall project architecture design and Next.js 15 App Router setup.
+  • Core room routing logic, invite URL handling, and deterministic room code mapping.
+  • Coordinating development phases, team tasks, and leading presentation reviews.
+  • Integrating frontend components with backend cloud services.
+
+----------------------------------------------------------------------------------------
+MEMBER 2: FRONTEND & UI/UX DESIGN ENGINEER
+----------------------------------------------------------------------------------------
+Role Title : Frontend Developer & UI/UX Specialist
+Key Responsibilities:
+  • Designing state-of-the-art Liquid-Glass UI components and dark mode aesthetic tokens.
+  • Building the interactive Lounge Sofa visual presence display and animated member avatars.
+  • Ensuring responsive layout across desktop, laptop, tablet, and mobile browsers.
+  • Polishing user interactions, smooth CSS micro-animations, and theme controls.
+
+----------------------------------------------------------------------------------------
+MEMBER 3: CLOUD & DATABASE ENGINEER
+----------------------------------------------------------------------------------------
+Role Title : Backend & Database Infrastructure Lead
+Key Responsibilities:
+  • Implementing Firebase Authentication (Google 1-click OAuth Popup & Email/Password).
+  • Designing Cloud Firestore NoSQL schema structures (`rooms/{roomId}` and `codes/{code}`).
+  • Configuring cloud security rules, database indexes, and serverless authentication state.
+  • Managing persistent user profile data and room code lookup registries.
+
+----------------------------------------------------------------------------------------
+MEMBER 4: REAL-TIME ENGINE & MEDIA SPECIALIST
+----------------------------------------------------------------------------------------
+Role Title : Real-Time Synchronization & Media Engineer
+Key Responsibilities:
+  • Developing the sub-100ms dual-engine live chat system (BroadcastChannel + Firestore).
+  • Integrating YouTube Data API v3 for video search, playlist loading, and metadata extraction.
+  • Building global video player state synchronization (synchronized play, pause, timestamp scrubbing).
+  • Implementing WebRTC and PeerJS infrastructure for live camera and microphone video streams.
+
+----------------------------------------------------------------------------------------
+MEMBER 5: QA, TESTING & DEVOPS ENGINEER
+----------------------------------------------------------------------------------------
+Role Title : Quality Assurance, Performance & DevOps Lead
+Key Responsibilities:
+  • Conducting cross-browser compatibility testing (Chrome, Edge, Firefox, Safari & Mobile).
+  • Optimizing memory cache performance (`memoryLocalCache()`) to eliminate database lock issues.
+  • Managing Git version control repositories, branching strategies, and codebase maintenance.
+  • Managing web deployment hosting (Vercel / Firebase) and compiling technical documentation.
+
+========================================================================================
+                                QUICK VIVA SUMMARY
+========================================================================================
+Member 1 (Lead Full-Stack) : Handles overall architecture, Next.js setup, & room routing.
+Member 2 (Frontend/UI)     : Builds Liquid-Glass design system, sofa layout, & CSS visuals.
+Member 3 (Cloud/Database)  : Manages Firebase Auth, Firestore document schemas, & security.
+Member 4 (Real-Time Sync)  : Develops sub-100ms chat, YouTube video player sync, & WebRTC.
+Member 5 (DevOps & QA)     : Conducts cross-device testing, memory tuning, & deployment.
+========================================================================================

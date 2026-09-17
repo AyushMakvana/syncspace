@@ -90,7 +90,7 @@ function LiquidButton({
         style={{ backdropFilter: 'url("#container-glass")' }}
       />
       <div className="pointer-events-none absolute inset-[2px] rounded-full bg-gradient-to-b from-white/28 via-transparent to-black/10" />
-      <div className="pointer-events-none relative z-10">{children}</div>
+      <div className="pointer-events-none relative z-10 inline-flex items-center justify-center gap-2.5">{children}</div>
       <GlassFilter />
     </Comp>
   );

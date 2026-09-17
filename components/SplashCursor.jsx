@@ -2,13 +2,13 @@
 import { useEffect, useRef } from 'react';
 
 function SplashCursor({
-  SIM_RESOLUTION = 128,
-  DYE_RESOLUTION = 1440,
-  CAPTURE_RESOLUTION = 512,
+  SIM_RESOLUTION = 64,
+  DYE_RESOLUTION = 512,
+  CAPTURE_RESOLUTION = 256,
   DENSITY_DISSIPATION = 3.5,
   VELOCITY_DISSIPATION = 2,
   PRESSURE = 0.1,
-  PRESSURE_ITERATIONS = 20,
+  PRESSURE_ITERATIONS = 8,
   CURL = 3,
   SPLAT_RADIUS = 0.2,
   SPLAT_FORCE = 6000,
@@ -23,6 +23,8 @@ function SplashCursor({
   const animationFrameId = useRef(null);
 
   useEffect(() => {
+    // Turned off for now as requested by user
+    return;
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -758,7 +760,8 @@ function SplashCursor({
       pressureProgram.bind();
       gl.uniform2f(pressureProgram.uniforms.texelSize, velocity.texelSizeX, velocity.texelSizeY);
       gl.uniform1i(pressureProgram.uniforms.uDivergence, divergence.attach(0));
-      for (let i = 0; i < config.PRESSURE_ITERATIONS; i++) {
+      const iterations = isScrolling ? 3 : (config.PRESSURE_ITERATIONS || 6);
+      for (let i = 0; i < iterations; i++) {
         gl.uniform1i(pressureProgram.uniforms.uPressure, pressure.read.attach(1));
         blit(pressure.write);
         pressure.swap();
@@ -965,7 +968,7 @@ function SplashCursor({
     }
 
     function scaleByPixelRatio(input) {
-      const pixelRatio = Math.min(window.devicePixelRatio || 1, 1.25);
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, 1.0);
       return Math.floor(input * pixelRatio);
     }
 
@@ -977,6 +980,17 @@ function SplashCursor({
         hash |= 0;
       }
       return hash;
+    }
+
+    // Scroll throttling to keep scrolling 100% lag-free on lower spec hardware
+    let isScrolling = false;
+    let scrollTimeout = null;
+    function handleScroll() {
+      isScrolling = true;
+      if (scrollTimeout) clearTimeout(scrollTimeout);
+      scrollTimeout = setTimeout(() => {
+        isScrolling = false;
+      }, 120);
     }
 
     // Named event handlers for proper cleanup
@@ -1033,6 +1047,7 @@ function SplashCursor({
     }
 
     // Add event listeners with passive option for scroll performance
+    window.addEventListener('scroll', handleScroll, { passive: true });
     window.addEventListener('mousedown', handleMouseDown, { passive: true });
     window.addEventListener('mousemove', handleMouseMove, { passive: true });
     window.addEventListener('touchstart', handleTouchStart, { passive: true });
@@ -1052,6 +1067,7 @@ function SplashCursor({
       }
 
       // Remove event listeners
+      window.removeEventListener('scroll', handleScroll);
       window.removeEventListener('mousedown', handleMouseDown);
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('touchstart', handleTouchStart);
@@ -1061,29 +1077,7 @@ function SplashCursor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return (
-    <div
-      style={{
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        zIndex: 0,
-        pointerEvents: 'none',
-        width: '100%',
-        height: '100%'
-      }}
-    >
-      <canvas
-        ref={canvasRef}
-        id="fluid"
-        style={{
-          width: '100vw',
-          height: '100vh',
-          display: 'block'
-        }}
-      />
-    </div>
-  );
+  return null;
 }
 
 export default SplashCursor;
