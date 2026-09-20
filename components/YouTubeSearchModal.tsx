@@ -169,7 +169,7 @@ export default function YouTubeSearchModal({
               <button
                 type="button"
                 onClick={() => setActiveTab("youtube")}
-                className="group flex flex-col items-center justify-center rounded-2xl border border-white/20 bg-white p-6 shadow-xl transition hover:scale-[1.02] hover:shadow-2xl"
+                className="group flex flex-col items-center justify-center rounded-2xl border border-white/20 bg-white p-6 shadow-xl transition hover:shadow-2xl"
               >
                 {/* YouTube Red Play Logo Container */}
                 <div className="flex items-center justify-center gap-2">
@@ -189,7 +189,7 @@ export default function YouTubeSearchModal({
               <button
                 type="button"
                 onClick={() => setActiveTab("url")}
-                className="group flex flex-col items-center justify-center rounded-2xl border border-white/20 bg-gradient-to-br from-purple-900/60 to-indigo-900/60 p-6 shadow-xl transition hover:scale-[1.02] hover:border-yellow-300/60"
+                className="group flex flex-col items-center justify-center rounded-2xl border border-white/20 bg-gradient-to-br from-purple-900/60 to-indigo-900/60 p-6 shadow-xl transition hover:border-yellow-300/60"
               >
                 <div className="mb-2 grid size-12 place-items-center rounded-2xl border border-yellow-300/40 bg-yellow-400/20 text-yellow-300 shadow-md">
                   <Globe className="size-6" />
@@ -244,8 +244,14 @@ export default function YouTubeSearchModal({
               </LiquidButton>
             </form>
 
-            {/* Results Grid */}
-            <div className="mt-4 max-h-[340px] space-y-2.5 overflow-y-auto pr-1">
+            {/* Results Grid with Mouse Wheel Scroll */}
+            <div
+              onWheel={(e) => {
+                e.stopPropagation();
+                e.currentTarget.scrollTop += e.deltaY;
+              }}
+              className="mt-4 max-h-[340px] space-y-2.5 overflow-y-auto pr-1"
+            >
               {searchResults.map((item) => (
                 <div
                   key={item.id}
@@ -257,10 +263,11 @@ export default function YouTubeSearchModal({
                 >
                   <div className="flex items-center gap-3 overflow-hidden">
                     <div className="relative h-14 w-24 shrink-0 overflow-hidden rounded-lg bg-black">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={item.thumbnail}
                         alt={item.title}
-                        className="h-full w-full object-cover transition group-hover:scale-105"
+                        className="h-full w-full object-cover transition"
                       />
                       <div className="absolute inset-0 grid place-items-center bg-black/30 opacity-0 transition group-hover:opacity-100">
                         <Play className="size-6 fill-white text-white" />
