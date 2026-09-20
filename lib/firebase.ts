@@ -71,6 +71,14 @@ export async function signInWithGooglePopup() {
     return { user: profile, error: null };
   } catch (err: unknown) {
     const errorMsg = err instanceof Error ? err.message : "Google sign-in error";
+    console.error("Google Auth Error details:", err);
+    if (typeof window !== "undefined" && errorMsg.includes("unauthorized-domain")) {
+      alert(
+        "Firebase Domain Error:\n\n" +
+        "Please add '" + window.location.hostname + "' to Authorized Domains in:\n" +
+        "Firebase Console -> Authentication -> Settings -> Authorized domains"
+      );
+    }
     return { user: null, error: errorMsg };
   }
 }
