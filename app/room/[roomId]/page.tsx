@@ -834,8 +834,9 @@ export default function RoomPage() {
               members={members}
             />
 
+            <div className="flex h-1/2 min-h-0 flex-col">
             {/* Sidebar Tab Navigation */}
-            <div className="flex border-b border-white/10 bg-white/5 px-2">
+            <div className="flex shrink-0 border-b border-white/10 bg-white/5 px-2">
               <button
                 onClick={() => setActiveTab("chat")}
                 className={`flex flex-1 items-center justify-center gap-2 py-3 text-xs font-bold transition border-b-2 ${
@@ -977,6 +978,7 @@ export default function RoomPage() {
                 ))}
               </div>
             )}
+            </div>
           </aside>
         </div>
       </div>

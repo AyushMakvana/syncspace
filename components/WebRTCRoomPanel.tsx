@@ -60,7 +60,7 @@ function VideoTile({ participant }: { participant: ParticipantMedia }) {
   }, [participant.stream]);
 
   return (
-    <div className="relative flex min-h-[92px] flex-1 overflow-hidden rounded-lg border border-violet-400/55 bg-[#111025]">
+    <div className="relative flex min-h-0 flex-1 overflow-hidden rounded-lg border border-violet-400/55 bg-[#111025]">
       {!participant.isLocal && participant.stream && (
         <audio ref={audioRef} autoPlay playsInline className="hidden" />
       )}
@@ -385,8 +385,8 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
   }, [activeUserId, currentUser.name, isCameraOn, isMicOn, localAudioLevel, localSpeakingAt, localStream, remoteMedia]);
 
   return (
-    <section className="border-b border-white/10 bg-black/35 p-3">
-      <div className="mb-2 flex items-center justify-between">
+    <section className="flex h-1/2 min-h-0 flex-col border-b border-white/10 bg-black/35 p-3">
+      <div className="mb-2 flex shrink-0 items-center justify-between">
         <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-white/45">
           Members ({members.length})
         </p>
@@ -395,13 +395,13 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
         </span>
       </div>
 
-      <div className="grid min-h-[184px] grid-rows-2 gap-2">
+      <div className="grid min-h-0 flex-1 grid-rows-2 gap-2">
         {visibleParticipants.map((participant) => (
           <VideoTile key={participant.id} participant={participant} />
         ))}
       </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-2">
+      <div className="mt-3 grid shrink-0 grid-cols-2 gap-2">
         <button
           type="button"
           onClick={handleCameraToggle}
