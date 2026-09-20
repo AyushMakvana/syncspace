@@ -783,6 +783,7 @@ export default function RoomPage() {
                       videoId={selectedMediaUrl}
                       onStateSync={handleYouTubeStateSync}
                       syncState={youtubeSyncState}
+                      clientId={getActiveUserId()}
                     />
                   ) : (
                     <video
@@ -1366,6 +1367,7 @@ export default function RoomPage() {
     </main>
   );
 }
+
 
 
 

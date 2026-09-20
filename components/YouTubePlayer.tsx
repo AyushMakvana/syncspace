@@ -7,6 +7,7 @@ interface YouTubePlayerProps {
   isHost?: boolean;
   onStateSync?: (state: number, currentTime: number) => void;
   syncState?: { state: number; currentTime: number; timestamp: number; updatedBy?: string } | null;
+  clientId?: string;
 }
 
 interface YTPlayerInstance {
@@ -32,7 +33,7 @@ declare global {
   }
 }
 
-export default function YouTubePlayer({ videoId, onStateSync, syncState }: YouTubePlayerProps) {
+export default function YouTubePlayer({ videoId, onStateSync, syncState, clientId }: YouTubePlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<YTPlayerInstance | null>(null);
   const isSyncingRef = useRef(false);
@@ -158,7 +159,8 @@ export default function YouTubePlayer({ videoId, onStateSync, syncState }: YouTu
       const previous = lastObservedRef.current;
       const expectedTime = previous.state === 1 ? previous.time + (now - previous.at) / 1000 : previous.time;
       const didSeek = Math.abs(currentTime - expectedTime) > 1.25;
-      const shouldHeartbeat = state === 1 && now - lastSentAtRef.current > 2500;
+      const isPlaybackOwner = !syncStateRef.current?.updatedBy || syncStateRef.current.updatedBy === clientId;
+      const shouldHeartbeat = isPlaybackOwner && state === 1 && now - lastSentAtRef.current > 2500;
       const stateChanged = lastStateRef.current !== state;
 
       if (didSeek || shouldHeartbeat || stateChanged) {
@@ -172,7 +174,7 @@ export default function YouTubePlayer({ videoId, onStateSync, syncState }: YouTu
     }, 700);
 
     return () => window.clearInterval(intervalId);
-  }, [onStateSync]);
+  }, [clientId, onStateSync]);
 
   useEffect(() => {
     if (!syncState || !playerRef.current || typeof playerRef.current.getCurrentTime !== "function") return;
@@ -205,10 +207,46 @@ export default function YouTubePlayer({ videoId, onStateSync, syncState }: YouTu
     }, 600);
   }, [syncState]);
 
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      const player = playerRef.current;
+      const roomSync = syncStateRef.current;
+      if (!player || !roomSync || isSyncingRef.current || typeof player.getCurrentTime !== "function") return;
+      if (roomSync.state !== 1 || roomSync.updatedBy === clientId) return;
+
+      const elapsed = Math.max(0, (Date.now() - roomSync.timestamp) / 1000);
+      const targetTime = roomSync.currentTime + elapsed;
+      const localTime = player.getCurrentTime();
+      const drift = Math.abs(localTime - targetTime);
+
+      if (drift > 1.1) {
+        isSyncingRef.current = true;
+        player.seekTo(targetTime, true);
+        if (player.getPlayerState() !== 1) {
+          player.playVideo();
+        }
+        lastStateRef.current = 1;
+        lastObservedRef.current = { time: targetTime, at: Date.now(), state: 1 };
+
+        window.setTimeout(() => {
+          isSyncingRef.current = false;
+        }, 450);
+      }
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [clientId]);
   return (
     <div className="relative h-full w-full bg-black">
       <div ref={containerRef} className="h-full w-full" />
     </div>
   );
 }
+
+
+
+
+
+
 
