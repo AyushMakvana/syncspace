@@ -21,7 +21,6 @@ import {
 } from "lucide-react";
 
 import { LiquidGlassCard } from "@/components/ui/liquid-weather-glass";
-import SplashCursor from "@/components/SplashCursor";
 import { LiquidButton } from "@/components/ui/liquid-glass-button";
 
 const navItems = ["Home", "Features", "Rooms", "Team"];
@@ -105,23 +104,7 @@ function RoomPreview() {
 export default function Home() {
   return (
     <main className="relative min-h-svh overflow-x-hidden bg-black text-white">
-      <div className="fixed inset-0 z-0 bg-black">
-        <SplashCursor
-          SIM_RESOLUTION={64}
-          DYE_RESOLUTION={512}
-          PRESSURE_ITERATIONS={8}
-          DENSITY_DISSIPATION={3.5}
-          VELOCITY_DISSIPATION={2}
-          PRESSURE={0.1}
-          CURL={3}
-          SPLAT_RADIUS={0.2}
-          SPLAT_FORCE={6000}
-          COLOR_UPDATE_SPEED={10}
-          BACK_COLOR={{ r: 0, g: 0, b: 0 }}
-          TRANSPARENT={false}
-          RAINBOW_MODE
-        />
-      </div>
+      <div className="fixed inset-0 z-0 bg-[radial-gradient(circle_at_50%_0%,rgba(88,28,135,0.28),transparent_42%),#000]" />
 
       <div className="relative z-10 mx-auto flex w-full max-w-[72rem] flex-col gap-14 px-5 py-5 sm:px-8 lg:gap-20">
         <SectionCard className="sticky top-3 z-50 px-5 py-3">
@@ -361,3 +344,4 @@ export default function Home() {
     </main>
   );
 }
+

@@ -66,7 +66,7 @@ const SAMPLE_YOUTUBE_VIDEOS: YouTubeVideoItem[] = [
 interface YouTubeSearchModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSelectVideo: (videoId: string, fullUrl: string) => void;
+  onSelectVideo: (videoId: string, fullUrl: string, title?: string) => void;
 }
 
 export default function YouTubeSearchModal({
@@ -132,7 +132,7 @@ export default function YouTubeSearchModal({
     e.preventDefault();
     if (!customUrlInput.trim()) return;
     const vId = extractVideoId(customUrlInput);
-    onSelectVideo(vId, `https://www.youtube.com/watch?v=${vId}`);
+    onSelectVideo(vId, `https://www.youtube.com/watch?v=${vId}`, "Custom YouTube video");
     onClose();
   };
 
@@ -143,7 +143,7 @@ export default function YouTubeSearchModal({
         shadowIntensity="xs"
         glowIntensity="none"
         borderRadius="24px"
-        className="relative w-full max-w-2xl overflow-hidden border border-white/20 bg-[#120424]/95 p-6 text-white shadow-2xl backdrop-blur-2xl"
+        className="relative w-full max-w-5xl overflow-hidden border border-white/20 bg-[#120424]/95 p-6 text-white shadow-2xl backdrop-blur-2xl"
       >
         {/* Close Button */}
         <button
@@ -250,19 +250,19 @@ export default function YouTubeSearchModal({
                 e.stopPropagation();
                 e.currentTarget.scrollTop += e.deltaY;
               }}
-              className="mt-4 max-h-[340px] space-y-2.5 overflow-y-auto pr-1"
+              className="mt-4 grid max-h-[520px] grid-cols-1 gap-4 overflow-y-auto pr-2 md:grid-cols-2"
             >
               {searchResults.map((item) => (
                 <div
                   key={item.id}
                   onClick={() => {
-                    onSelectVideo(item.id, `https://www.youtube.com/watch?v=${item.id}`);
+                    onSelectVideo(item.id, `https://www.youtube.com/watch?v=${item.id}`, item.title);
                     onClose();
                   }}
-                  className="group flex items-center justify-between rounded-xl border border-white/10 bg-white/5 p-2.5 transition hover:border-yellow-300/60 hover:bg-white/10 cursor-pointer"
+                  className="group flex cursor-pointer flex-col overflow-hidden rounded-xl border border-white/10 bg-[#0f0f0f] transition hover:border-yellow-300/60 hover:bg-white/10"
                 >
-                  <div className="flex items-center gap-3 overflow-hidden">
-                    <div className="relative h-14 w-24 shrink-0 overflow-hidden rounded-lg bg-black">
+                  <div className="flex flex-col overflow-hidden">
+                    <div className="relative aspect-video w-full shrink-0 overflow-hidden bg-black">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={item.thumbnail}
@@ -273,7 +273,7 @@ export default function YouTubeSearchModal({
                         <Play className="size-6 fill-white text-white" />
                       </div>
                     </div>
-                    <div className="overflow-hidden">
+                    <div className="overflow-hidden p-3">
                       <p className="truncate text-xs font-bold text-white group-hover:text-yellow-200">
                         {item.title}
                       </p>
@@ -284,7 +284,7 @@ export default function YouTubeSearchModal({
                   </div>
                   <button
                     type="button"
-                    className="ml-2 shrink-0 rounded-lg border border-yellow-300/50 bg-yellow-300/90 px-3 py-1.5 text-[11px] font-black text-black transition group-hover:bg-yellow-200"
+                    className="mx-3 mb-3 shrink-0 rounded-lg border border-yellow-300/50 bg-yellow-300/90 px-3 py-1.5 text-[11px] font-black text-black transition group-hover:bg-yellow-200"
                   >
                     Select
                   </button>
@@ -339,3 +339,4 @@ export default function YouTubeSearchModal({
     </div>
   );
 }
+

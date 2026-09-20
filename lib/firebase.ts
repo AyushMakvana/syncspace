@@ -191,6 +191,13 @@ interface FirestoreMemberPresence {
   lastSeen: number;
 }
 
+interface FirestorePlaybackState {
+  state: number;
+  currentTime: number;
+  updatedAt: number;
+  updatedBy?: string;
+}
+
 interface FirestoreChatMessage {
   id: string;
   sender: string;
@@ -205,6 +212,9 @@ export interface FirestoreRoomData {
   members?: FirestoreMemberPresence[];
   messages?: FirestoreChatMessage[];
   mediaUrl?: string;
+  mediaType?: "youtube" | "direct";
+  mediaTitle?: string;
+  playback?: FirestorePlaybackState;
 }
 
 function normalizeMembers(data: Record<string, unknown>): FirestoreMemberPresence[] {
@@ -215,16 +225,17 @@ function normalizeMembers(data: Record<string, unknown>): FirestoreMemberPresenc
     ? (data.membersById as Record<string, FirestoreMemberPresence>)
     : {};
 
-  return [
-    ...legacyMembers.map((member) => ({
-      ...member,
-      id: member.id || member.name.toLowerCase().trim(),
-    })),
-    ...Object.entries(memberMapData).map(([id, member]) => ({
-      ...member,
-      id,
-    })),
-  ];
+  const mappedMembers = Object.entries(memberMapData).map(([id, member]) => ({
+    ...member,
+    id,
+  }));
+
+  if (mappedMembers.length > 0) return mappedMembers;
+
+  return legacyMembers.map((member) => ({
+    ...member,
+    id: member.id || member.name.toLowerCase().trim(),
+  }));
 }
 
 function normalizeMessages(data: Record<string, unknown>): FirestoreChatMessage[] {
@@ -236,11 +247,13 @@ function normalizeMessages(data: Record<string, unknown>): FirestoreChatMessage[
     : {};
 
   const messageMap = new Map<string, FirestoreChatMessage>();
-  for (const message of legacyMessages) {
+  const mappedMessages = Object.entries(messageMapData);
+  const sourceMessages = mappedMessages.length > 0
+    ? mappedMessages.map(([id, message]) => ({ ...message, id: message.id || id }))
+    : legacyMessages;
+
+  for (const message of sourceMessages) {
     messageMap.set(message.id, message);
-  }
-  for (const [id, message] of Object.entries(messageMapData)) {
-    messageMap.set(id, { ...message, id: message.id || id });
   }
 
   return Array.from(messageMap.values()).sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
@@ -262,6 +275,9 @@ export function subscribeToRoomFirestore(
             members: normalizeMembers(data),
             messages: normalizeMessages(data),
             mediaUrl: data.mediaUrl,
+            mediaType: data.mediaType,
+            mediaTitle: data.mediaTitle,
+            playback: data.playback,
           });
         }
       },
@@ -331,7 +347,61 @@ export async function sendChatMessageFirestore(roomId: string, message: { id: st
     console.error("Firestore chat send failed", error);
   }
 }
+export async function updateRoomMediaFirestore(
+  roomId: string,
+  media: { url: string; type: "youtube" | "direct"; title?: string; selectedBy?: string }
+) {
+  try {
+    const now = Date.now();
+    const roomRef = doc(db, "rooms", roomId);
+    await setDoc(
+      roomRef,
+      {
+        mediaUrl: media.url,
+        mediaType: media.type,
+        mediaTitle: media.title || "",
+        playback: {
+          state: 2,
+          currentTime: 0,
+          updatedAt: now,
+          updatedBy: media.selectedBy || "",
+        },
+        updatedAt: now,
+      },
+      { merge: true }
+    );
+  } catch (error) {
+    console.error("Firestore media update failed", error);
+  }
+}
+
+export async function updateRoomPlaybackFirestore(
+  roomId: string,
+  playback: { state: number; currentTime: number; updatedBy?: string }
+) {
+  try {
+    const now = Date.now();
+    const roomRef = doc(db, "rooms", roomId);
+    await setDoc(
+      roomRef,
+      {
+        playback: {
+          state: playback.state,
+          currentTime: playback.currentTime,
+          updatedAt: now,
+          updatedBy: playback.updatedBy || "",
+        },
+        updatedAt: now,
+      },
+      { merge: true }
+    );
+  } catch (error) {
+    console.error("Firestore playback sync failed", error);
+  }
+}
 export { app, auth, db, googleProvider, analytics, signOut };
+
+
 
 
 

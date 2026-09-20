@@ -41,6 +41,7 @@ export default function YouTubePlayer({
   const playerRef = useRef<YTPlayerInstance | null>(null);
   const isSyncingRef = useRef<boolean>(false);
   const lastStateRef = useRef<number>(-1);
+  const syncStateRef = useRef<typeof syncState>(syncState);
 
   // Helper to extract clean YouTube Video ID
   const parseVideoId = useCallback((rawId: string) => {
@@ -51,6 +52,10 @@ export default function YouTubePlayer({
   }, []);
 
   const activeVideoId = parseVideoId(videoId);
+
+  useEffect(() => {
+    syncStateRef.current = syncState;
+  }, [syncState]);
 
   // Load YouTube IFrame API Script if not present
   useEffect(() => {
@@ -79,7 +84,18 @@ export default function YouTubePlayer({
         },
         events: {
           onReady: (event: YTPlayerEvent) => {
-            event.target.playVideo();
+            const initialSync = syncStateRef.current;
+            if (initialSync) {
+              const elapsed = initialSync.state === 1 ? Math.max(0, (Date.now() - initialSync.timestamp) / 1000) : 0;
+              event.target.seekTo(initialSync.currentTime + elapsed, true);
+              if (initialSync.state === 1) {
+                event.target.playVideo();
+              } else if (initialSync.state === 2) {
+                event.target.pauseVideo();
+              }
+            } else {
+              event.target.playVideo();
+            }
           },
           onStateChange: (event: YTPlayerEvent) => {
             if (isSyncingRef.current) return;
@@ -129,15 +145,17 @@ export default function YouTubePlayer({
       return;
     }
 
-    const { state, currentTime } = syncState;
+    const { state, currentTime, timestamp } = syncState;
+    const elapsed = state === 1 ? Math.max(0, (Date.now() - timestamp) / 1000) : 0;
+    const targetTime = currentTime + elapsed;
     const localTime = playerRef.current.getCurrentTime();
-    const timeDiff = Math.abs(localTime - currentTime);
+    const timeDiff = Math.abs(localTime - targetTime);
 
     isSyncingRef.current = true;
 
     // Seek if timestamp drift is greater than 1.5 seconds
     if (timeDiff > 1.5) {
-      playerRef.current.seekTo(currentTime, true);
+      playerRef.current.seekTo(targetTime, true);
     }
 
     // Synchronize Play/Pause state
@@ -158,3 +176,8 @@ export default function YouTubePlayer({
     </div>
   );
 }
+
+
+
+
+

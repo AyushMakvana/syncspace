@@ -33,7 +33,6 @@ import {
 } from "lucide-react";
 
 import { LiquidGlassCard } from "@/components/ui/liquid-weather-glass";
-import SplashCursor from "@/components/SplashCursor";
 import { LiquidButton } from "@/components/ui/liquid-glass-button";
 import YouTubePlayer from "@/components/YouTubePlayer";
 import YouTubeSearchModal from "@/components/YouTubeSearchModal";
@@ -47,6 +46,8 @@ import {
   heartbeatMemberFirestore,
   leaveMemberFirestore,
   sendChatMessageFirestore,
+  updateRoomMediaFirestore,
+  updateRoomPlaybackFirestore,
 } from "@/lib/firebase";
 
 interface ChatMessage {
@@ -55,6 +56,7 @@ interface ChatMessage {
   avatar?: string;
   text: string;
   time: string;
+  createdAt?: number;
   isSelf: boolean;
 }
 
@@ -87,7 +89,7 @@ export default function RoomPage() {
   const rawHost = roomId.replace("-room", "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
   const hostName = rawHost ? rawHost.charAt(0).toUpperCase() + rawHost.slice(1) : "Ayush";
 
-  const [currentUser, setCurrentUser] = useState<{ name: string; email: string; uid?: string }>(() => {
+  const [currentUser, setCurrentUser] = useState<{ name: string; email: string; uid?: string; photoURL?: string }>(() => {
     if (typeof window !== "undefined") {
       const saved = localStorage.getItem("syncspace_current_user");
       if (saved) {
@@ -152,22 +154,37 @@ export default function RoomPage() {
 
   // Media Player State
   const [selectedMediaUrl, setSelectedMediaUrl] = useState<string>("");
+  const [mediaTitle, setMediaTitle] = useState<string>("");
   const [youtubeSyncState, setYoutubeSyncState] = useState<{
     state: number;
     currentTime: number;
     timestamp: number;
+    updatedBy?: string;
   } | null>(null);
 
   const handleYouTubeStateSync = useCallback((state: number, currentTime: number) => {
+    const activeUserId = (currentUser.uid || currentUser.email || currentUser.name || "")
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]/g, "");
+    if (!activeUserId) return;
+
+    updateRoomPlaybackFirestore(roomId, {
+      state,
+      currentTime,
+      updatedBy: activeUserId,
+    });
+
     if (channelRef.current) {
       channelRef.current.postMessage({
         type: "MEDIA_SYNC",
         state,
         currentTime,
         timestamp: Date.now(),
+        updatedBy: activeUserId,
       });
     }
-  }, []);
+  }, [currentUser.email, currentUser.name, currentUser.uid, roomId]);
 
   // Chat State
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -342,7 +359,23 @@ export default function RoomPage() {
           return formattedMsgs;
         });
       }
-    });
+
+      if (typeof data.mediaUrl === "string") {
+        setSelectedMediaUrl((prev) => (prev === data.mediaUrl ? prev : data.mediaUrl || ""));
+        setMediaTitle(typeof data.mediaTitle === "string" ? data.mediaTitle : "");
+      }
+
+      if (data.playback) {
+        const activeUserId = getActiveUserId();
+        if (!data.playback.updatedBy || data.playback.updatedBy !== activeUserId) {
+          setYoutubeSyncState({
+            state: data.playback.state,
+            currentTime: data.playback.currentTime,
+            timestamp: data.playback.updatedAt,
+            updatedBy: data.playback.updatedBy,
+          });
+        }
+      }    });
 
     const handleUnload = () => {
       const activeUserId = getActiveUserId();
@@ -366,7 +399,7 @@ export default function RoomPage() {
       // eslint-disable-next-line react-hooks/immutability
       channelRef.current = channel;
       channel.onmessage = (event) => {
-        const { type, mediaUrl, state, currentTime, timestamp } = event.data;
+        const { type, mediaUrl, state, currentTime, timestamp, updatedBy } = event.data;
         if (type === "USER_JOINED" || type === "USER_LEFT") {
           syncRoomMembers();
         } else if (type === "CHAT_MESSAGE") {
@@ -374,7 +407,9 @@ export default function RoomPage() {
         } else if (type === "MEDIA_SELECTED") {
           setSelectedMediaUrl(mediaUrl);
         } else if (type === "MEDIA_SYNC") {
-          setYoutubeSyncState({ state, currentTime, timestamp });
+          if (updatedBy !== getActiveUserId()) {
+            setYoutubeSyncState({ state, currentTime, timestamp, updatedBy });
+          }
         }
       };
 
@@ -475,24 +510,8 @@ export default function RoomPage() {
 
   return (
     <main className="relative flex min-h-svh flex-col overflow-hidden bg-black text-white">
-      {/* Interactive WebGL SplashCursor Background */}
-      <div className="fixed inset-0 z-0 bg-black">
-        <SplashCursor
-          SIM_RESOLUTION={64}
-          DYE_RESOLUTION={512}
-          PRESSURE_ITERATIONS={8}
-          DENSITY_DISSIPATION={3.5}
-          VELOCITY_DISSIPATION={2}
-          PRESSURE={0.1}
-          CURL={3}
-          SPLAT_RADIUS={0.2}
-          SPLAT_FORCE={6000}
-          COLOR_UPDATE_SPEED={10}
-          BACK_COLOR={{ r: 0, g: 0, b: 0 }}
-          TRANSPARENT={false}
-          RAINBOW_MODE
-        />
-      </div>
+      {/* Static Room Background */}
+      <div className="fixed inset-0 z-0 bg-[radial-gradient(circle_at_50%_0%,rgba(88,28,135,0.28),transparent_42%),#000]" />
 
       {/* Main Room Container Layer */}
       <div className="relative z-10 flex h-svh flex-col">
@@ -529,7 +548,7 @@ export default function RoomPage() {
             >
               <div className="flex h-8 items-center gap-2.5 px-3.5 text-xs font-bold">
                 <div className="grid size-5 shrink-0 place-items-center overflow-hidden rounded-full border border-yellow-200/80 bg-gradient-to-tr from-cyan-400 to-indigo-700 text-[10px] font-black text-white shadow-sm">
-                  {hostName.charAt(0).toUpperCase() || "A"}
+                  {userInitial}
                 </div>
                 <span className="truncate max-w-[150px] sm:max-w-[240px] font-extrabold text-white leading-none">
                   {roomTitle}
@@ -749,6 +768,10 @@ export default function RoomPage() {
             <div className="relative flex w-full max-w-4xl flex-1 flex-col items-center justify-center overflow-hidden rounded-3xl border border-white/20 bg-gradient-to-b from-purple-950/40 via-black/80 to-black/90 shadow-2xl backdrop-blur-xl">
               {selectedMediaUrl ? (
                 <div className="relative h-full w-full bg-black">
+                  <div className="absolute left-3 top-3 z-10 flex max-w-[calc(100%-1.5rem)] items-center gap-2 rounded-full border border-white/15 bg-black/60 px-3 py-1.5 text-xs font-bold text-white/85 backdrop-blur-md">
+                    <span className="truncate">{mediaTitle || "Shared media"}</span>
+                    <button type="button" onClick={() => setIsMediaOpen(true)} className="shrink-0 text-yellow-200 hover:text-yellow-100">Change</button>
+                  </div>
                   {selectedMediaUrl.includes("youtube.com") || selectedMediaUrl.includes("youtu.be") || selectedMediaUrl.length === 11 ? (
                     <YouTubePlayer
                       videoId={selectedMediaUrl}
@@ -1082,13 +1105,21 @@ export default function RoomPage() {
       <YouTubeSearchModal
         isOpen={isMediaOpen}
         onClose={() => setIsMediaOpen(false)}
-        onSelectVideo={(videoId, fullUrl) => {
+        onSelectVideo={(videoId, fullUrl, title) => {
+          const selectedTitle = title || "YouTube video";
           setSelectedMediaUrl(fullUrl);
+          setMediaTitle(selectedTitle);
+          setYoutubeSyncState({ state: 1, currentTime: 0, timestamp: Date.now(), updatedBy: getActiveUserId() });
+          updateRoomMediaFirestore(roomId, {
+            url: fullUrl,
+            type: videoId ? "youtube" : "direct",
+            title: selectedTitle,
+            selectedBy: getActiveUserId(),
+          });
           if (channelRef.current) {
             channelRef.current.postMessage({ type: "MEDIA_SELECTED", mediaUrl: fullUrl });
           }
-        }}
-      />
+        }}      />
 
       {/* Join Room Auth Modal for Unauthenticated Direct Links */}
       {showAuthModal && (
@@ -1327,6 +1358,11 @@ export default function RoomPage() {
     </main>
   );
 }
+
+
+
+
+
 
 
 
