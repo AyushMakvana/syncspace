@@ -51,13 +51,16 @@ function VideoTile({ participant }: { participant: ParticipantMedia }) {
   const audioRef = useRef<HTMLAudioElement>(null);
 
   useEffect(() => {
-    if (videoRef.current && videoRef.current.srcObject !== participant.stream) {
-      videoRef.current.srcObject = participant.stream;
+    if (videoRef.current) {
+      const nextVideoStream = participant.cameraOn ? participant.stream : null;
+      if (videoRef.current.srcObject !== nextVideoStream) {
+        videoRef.current.srcObject = nextVideoStream;
+      }
     }
     if (audioRef.current && audioRef.current.srcObject !== participant.stream) {
       audioRef.current.srcObject = participant.stream;
     }
-  }, [participant.stream]);
+  }, [participant.cameraOn, participant.stream]);
 
   return (
     <div className="relative flex min-h-0 flex-1 overflow-hidden rounded-lg border border-violet-400/55 bg-[#111025]">
@@ -159,6 +162,23 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
       const [stream] = event.streams;
       const hasVideo = stream.getVideoTracks().some((track) => track.enabled);
       const hasAudio = stream.getAudioTracks().some((track) => track.enabled);
+      stream.getVideoTracks().forEach((track) => {
+        track.onmute = () => {
+          setRemoteMedia((prev) => ({
+            ...prev,
+            [remoteId]: {
+              id: remoteId,
+              name: prev[remoteId]?.name || memberNameById.get(remoteId) || "Member",
+              stream: prev[remoteId]?.stream || stream,
+              cameraOn: false,
+              micOn: Boolean(prev[remoteId]?.micOn),
+              audioLevel: prev[remoteId]?.audioLevel || 0,
+              speakingAt: prev[remoteId]?.speakingAt || 0,
+            },
+          }));
+        };
+        track.onended = track.onmute;
+      });
       setRemoteMedia((prev) => ({
         ...prev,
         [remoteId]: {
@@ -313,8 +333,8 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
               id: signal.from,
               name: memberNameById.get(signal.from) || "Member",
               stream: prev[signal.from]?.stream || null,
-              cameraOn: Boolean(payload.cameraOn || prev[signal.from]?.stream?.getVideoTracks().length),
-              micOn: Boolean(payload.micOn || prev[signal.from]?.stream?.getAudioTracks().length),
+              cameraOn: Boolean(payload.cameraOn),
+              micOn: Boolean(payload.micOn),
               audioLevel: Number(payload.audioLevel || 0),
               speakingAt: Number(payload.speakingAt || 0),
             },
