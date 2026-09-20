@@ -144,14 +144,16 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
 
     peer.ontrack = (event) => {
       const [stream] = event.streams;
+      const hasVideo = stream.getVideoTracks().some((track) => track.enabled);
+      const hasAudio = stream.getAudioTracks().some((track) => track.enabled);
       setRemoteMedia((prev) => ({
         ...prev,
         [remoteId]: {
           id: remoteId,
           name: memberNameById.get(remoteId) || "Member",
           stream,
-          cameraOn: prev[remoteId]?.cameraOn ?? stream.getVideoTracks().some((track) => track.enabled),
-          micOn: prev[remoteId]?.micOn ?? stream.getAudioTracks().some((track) => track.enabled),
+          cameraOn: Boolean(prev[remoteId]?.cameraOn || hasVideo),
+          micOn: Boolean(prev[remoteId]?.micOn || hasAudio),
           audioLevel: prev[remoteId]?.audioLevel || 0,
           speakingAt: prev[remoteId]?.speakingAt || 0,
         },
@@ -374,15 +376,33 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
       speakingAt: localSpeakingAt,
       isLocal: true,
     };
-    const all = [localParticipant, ...Object.values(remoteMedia)];
-    return all
+
+    const memberParticipants = members.map((member) => {
+      if (member.id === activeUserId) return localParticipant;
+
+      const remote = remoteMedia[member.id];
+      return {
+        id: member.id,
+        name: member.name,
+        stream: remote?.stream || null,
+        cameraOn: Boolean(remote?.cameraOn),
+        micOn: Boolean(remote?.micOn),
+        audioLevel: remote?.audioLevel || 0,
+        speakingAt: remote?.speakingAt || 0,
+      };
+    });
+
+    const hasLocalMember = memberParticipants.some((participant) => participant.id === localParticipant.id);
+    const stableParticipants = hasLocalMember ? memberParticipants : [localParticipant, ...memberParticipants];
+
+    return stableParticipants
       .sort((a, b) => {
         if (b.speakingAt !== a.speakingAt) return b.speakingAt - a.speakingAt;
         if (b.audioLevel !== a.audioLevel) return b.audioLevel - a.audioLevel;
         return Number(Boolean(b.cameraOn)) - Number(Boolean(a.cameraOn));
       })
       .slice(0, 3);
-  }, [activeUserId, currentUser.name, isCameraOn, isMicOn, localAudioLevel, localSpeakingAt, localStream, remoteMedia]);
+  }, [activeUserId, currentUser.name, isCameraOn, isMicOn, localAudioLevel, localSpeakingAt, localStream, members, remoteMedia]);
 
   const emptySlots = Math.max(0, 3 - visibleParticipants.length);
 
