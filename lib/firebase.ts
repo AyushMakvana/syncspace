@@ -206,6 +206,15 @@ interface FirestoreChatMessage {
   createdAt?: number;
 }
 
+export interface FirestoreWebRTCSignal {
+  id: string;
+  from: string;
+  to: string;
+  type: "offer" | "answer" | "candidate" | "media-status";
+  payload: unknown;
+  createdAt: number;
+}
+
 export interface FirestoreRoomData {
   hostId?: string;
   hostName?: string;
@@ -215,6 +224,7 @@ export interface FirestoreRoomData {
   mediaType?: "youtube" | "direct";
   mediaTitle?: string;
   playback?: FirestorePlaybackState;
+  webrtcSignals?: FirestoreWebRTCSignal[];
 }
 
 function normalizeMembers(data: Record<string, unknown>): FirestoreMemberPresence[] {
@@ -258,6 +268,18 @@ function normalizeMessages(data: Record<string, unknown>): FirestoreChatMessage[
 
   return Array.from(messageMap.values()).sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
 }
+
+function normalizeWebRTCSignals(data: Record<string, unknown>): FirestoreWebRTCSignal[] {
+  const signalMapData = data.webrtcSignalsById && typeof data.webrtcSignalsById === "object"
+    ? (data.webrtcSignalsById as Record<string, FirestoreWebRTCSignal>)
+    : {};
+  const cutoff = Date.now() - 120000;
+
+  return Object.entries(signalMapData)
+    .map(([id, signal]) => ({ ...signal, id: signal.id || id }))
+    .filter((signal) => Number(signal.createdAt || 0) > cutoff)
+    .sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
+}
 export function subscribeToRoomFirestore(
   roomId: string,
   callback: (data: FirestoreRoomData) => void
@@ -278,6 +300,7 @@ export function subscribeToRoomFirestore(
             mediaType: data.mediaType,
             mediaTitle: data.mediaTitle,
             playback: data.playback,
+            webrtcSignals: normalizeWebRTCSignals(data),
           });
         }
       },
@@ -397,6 +420,37 @@ export async function updateRoomPlaybackFirestore(
     );
   } catch (error) {
     console.error("Firestore playback sync failed", error);
+  }
+}
+
+export async function sendWebRTCSignalFirestore(
+  roomId: string,
+  signal: Omit<FirestoreWebRTCSignal, "id" | "createdAt"> & { id?: string; createdAt?: number }
+) {
+  try {
+    const now = signal.createdAt || Date.now();
+    const signalId = signal.id || `rtc-${signal.from}-${signal.to}-${now}-${Math.random().toString(36).slice(2, 8)}`;
+    const roomRef = doc(db, "rooms", roomId);
+
+    await setDoc(
+      roomRef,
+      {
+        webrtcSignalsById: {
+          [signalId]: {
+            id: signalId,
+            from: signal.from,
+            to: signal.to,
+            type: signal.type,
+            payload: signal.payload,
+            createdAt: now,
+          },
+        },
+        updatedAt: now,
+      },
+      { merge: true }
+    );
+  } catch (error) {
+    console.error("Firestore WebRTC signal send failed", error);
   }
 }
 export { app, auth, db, googleProvider, analytics, signOut };

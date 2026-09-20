@@ -6,10 +6,6 @@ import { useParams, useRouter } from "next/navigation";
 import {
   Sparkles,
   UserPlus,
-  Mic,
-  MicOff,
-  Video as VideoIcon,
-  VideoOff,
   MessageSquare,
   Users,
   Copy,
@@ -36,6 +32,7 @@ import { LiquidGlassCard } from "@/components/ui/liquid-weather-glass";
 import { LiquidButton } from "@/components/ui/liquid-glass-button";
 import YouTubePlayer from "@/components/YouTubePlayer";
 import YouTubeSearchModal from "@/components/YouTubeSearchModal";
+import WebRTCRoomPanel from "@/components/WebRTCRoomPanel";
 import {
   signInWithGooglePopup,
   signInWithEmail,
@@ -142,8 +139,6 @@ export default function RoomPage() {
   const roomTitle = `${hostName}'s room`;
 
   // Controls state
-  const [isMicOn, setIsMicOn] = useState(false);
-  const [isCameraOn, setIsCameraOn] = useState(false);
   const [activeTab, setActiveTab] = useState<"chat" | "members">("chat");
 
   // Modals state
@@ -570,6 +565,16 @@ export default function RoomPage() {
 
           {/* Right: User Profile & Actions */}
           <div className="flex items-center gap-2.5">
+            <LiquidButton
+              onClick={() => setIsInviteOpen(true)}
+              variant="gold"
+              size="lg"
+              className="hidden bg-yellow-300/95 px-4 text-xs font-black text-[#220038] shadow-[0_0_18px_rgba(253,224,71,0.18)] sm:inline-flex"
+            >
+              <UserPlus className="mr-1.5 size-4" />
+              Invite friends
+            </LiquidButton>
+
             {/* Settings Logo Trigger & Dropdown Menu (Matches User Screenshot) */}
             <div className="relative">
               <button
@@ -823,46 +828,11 @@ export default function RoomPage() {
 
           {/* Right Control Sidebar */}
           <aside className="flex min-h-0 w-80 shrink-0 flex-col border-l border-white/10 bg-black/50 backdrop-blur-xl">
-            {/* Top Sidebar Action Controls */}
-            <div className="flex flex-col gap-2.5 p-4 border-b border-white/10">
-              {/* Invite Friends Button (Primary Gold Liquid Button) */}
-              <LiquidButton
-                onClick={() => setIsInviteOpen(true)}
-                variant="gold"
-                size="xl"
-                className="w-full justify-center bg-yellow-300/95 font-black text-[#220038] shadow-[0_0_24px_rgba(253,224,71,0.25)]"
-              >
-                <UserPlus className="mr-2 size-4" />
-                Invite friends
-              </LiquidButton>
-
-              {/* Media Controls (Mic & Camera Toggles) */}
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={() => setIsCameraOn(!isCameraOn)}
-                  className={`flex items-center justify-center gap-2 rounded-2xl border py-2.5 text-xs font-bold transition ${
-                    isCameraOn
-                      ? "border-emerald-400/50 bg-emerald-500/20 text-emerald-200"
-                      : "border-white/15 bg-white/10 text-white/70 hover:bg-white/20 hover:text-white"
-                  }`}
-                >
-                  {isCameraOn ? <VideoIcon className="size-4" /> : <VideoOff className="size-4 text-red-400" />}
-                  <span>{isCameraOn ? "Cam On" : "Cam Off"}</span>
-                </button>
-
-                <button
-                  onClick={() => setIsMicOn(!isMicOn)}
-                  className={`flex items-center justify-center gap-2 rounded-2xl border py-2.5 text-xs font-bold transition ${
-                    isMicOn
-                      ? "border-emerald-400/50 bg-emerald-500/20 text-emerald-200"
-                      : "border-white/15 bg-white/10 text-white/70 hover:bg-white/20 hover:text-white"
-                  }`}
-                >
-                  {isMicOn ? <Mic className="size-4" /> : <MicOff className="size-4 text-red-400" />}
-                  <span>{isMicOn ? "Mic On" : "Mic Off"}</span>
-                </button>
-              </div>
-            </div>
+            <WebRTCRoomPanel
+              roomId={roomId}
+              currentUser={currentUser}
+              members={members}
+            />
 
             {/* Sidebar Tab Navigation */}
             <div className="flex border-b border-white/10 bg-white/5 px-2">

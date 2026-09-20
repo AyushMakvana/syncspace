@@ -16,6 +16,7 @@ interface YTPlayerInstance {
   seekTo: (seconds: number, allowSeekAhead: boolean) => void;
   playVideo: () => void;
   pauseVideo: () => void;
+  mute: () => void;
   getPlayerState: () => number;
 }
 
@@ -42,6 +43,7 @@ export default function YouTubePlayer({ videoId, onStateSync, syncState, clientI
   const lastSentAtRef = useRef(0);
   const lastAppliedSyncRef = useRef(0);
   const syncStateRef = useRef<typeof syncState>(syncState);
+  const autoplayRetryTimeoutRef = useRef<number | null>(null);
 
   const parseVideoId = useCallback((rawId: string) => {
     if (!rawId) return "";
@@ -51,6 +53,50 @@ export default function YouTubePlayer({ videoId, onStateSync, syncState, clientI
   }, []);
 
   const activeVideoId = parseVideoId(videoId);
+
+  const clearAutoplayRetry = useCallback(() => {
+    if (autoplayRetryTimeoutRef.current !== null) {
+      window.clearTimeout(autoplayRetryTimeoutRef.current);
+      autoplayRetryTimeoutRef.current = null;
+    }
+  }, []);
+
+  const playSyncedVideo = useCallback((player: YTPlayerInstance, targetTime: number) => {
+    player.playVideo();
+    clearAutoplayRetry();
+
+    autoplayRetryTimeoutRef.current = window.setTimeout(() => {
+      if (playerRef.current !== player || player.getPlayerState() === 1) return;
+
+      player.mute();
+      player.seekTo(targetTime, true);
+      player.playVideo();
+    }, 350);
+  }, [clearAutoplayRetry]);
+
+  const applySyncedPlayback = useCallback((
+    player: YTPlayerInstance,
+    roomSync: NonNullable<typeof syncState>
+  ) => {
+    const elapsed = roomSync.state === 1 ? Math.max(0, (Date.now() - roomSync.timestamp) / 1000) : 0;
+    const targetTime = roomSync.currentTime + elapsed;
+    const localTime = player.getCurrentTime();
+
+    if (Math.abs(localTime - targetTime) > 0.75) {
+      player.seekTo(targetTime, true);
+    }
+
+    if (roomSync.state === 1) {
+      playSyncedVideo(player, targetTime);
+    } else if (roomSync.state === 2) {
+      clearAutoplayRetry();
+      player.pauseVideo();
+    }
+
+    lastAppliedSyncRef.current = roomSync.timestamp;
+    lastStateRef.current = roomSync.state;
+    lastObservedRef.current = { time: targetTime, at: Date.now(), state: roomSync.state };
+  }, [clearAutoplayRetry, playSyncedVideo]);
 
   useEffect(() => {
     syncStateRef.current = syncState;
@@ -76,6 +122,7 @@ export default function YouTubePlayer({ videoId, onStateSync, syncState, clientI
           autoplay: 1,
           controls: 1,
           modestbranding: 1,
+          playsinline: 1,
           rel: 0,
           origin: window.location.origin,
         },
@@ -83,18 +130,7 @@ export default function YouTubePlayer({ videoId, onStateSync, syncState, clientI
           onReady: (event: YTPlayerEvent) => {
             const initialSync = syncStateRef.current;
             if (initialSync) {
-              const elapsed = initialSync.state === 1 ? Math.max(0, (Date.now() - initialSync.timestamp) / 1000) : 0;
-              const targetTime = initialSync.currentTime + elapsed;
-              event.target.seekTo(targetTime, true);
-              lastAppliedSyncRef.current = initialSync.timestamp;
-              lastStateRef.current = initialSync.state;
-              lastObservedRef.current = { time: targetTime, at: Date.now(), state: initialSync.state };
-
-              if (initialSync.state === 1) {
-                event.target.playVideo();
-              } else if (initialSync.state === 2) {
-                event.target.pauseVideo();
-              }
+              applySyncedPlayback(event.target, initialSync);
             } else {
               event.target.playVideo();
             }
@@ -136,13 +172,14 @@ export default function YouTubePlayer({ videoId, onStateSync, syncState, clientI
     return () => {
       if (playerRef.current) {
         try {
+          clearAutoplayRetry();
           playerRef.current.destroy();
         } catch {
           // ignore
         }
       }
     };
-  }, [activeVideoId, onStateSync]);
+  }, [activeVideoId, applySyncedPlayback, clearAutoplayRetry, onStateSync]);
 
   useEffect(() => {
     if (!onStateSync) return;
@@ -180,32 +217,14 @@ export default function YouTubePlayer({ videoId, onStateSync, syncState, clientI
     if (!syncState || !playerRef.current || typeof playerRef.current.getCurrentTime !== "function") return;
     if (syncState.timestamp <= lastAppliedSyncRef.current) return;
 
-    const { state, currentTime, timestamp } = syncState;
-    const elapsed = state === 1 ? Math.max(0, (Date.now() - timestamp) / 1000) : 0;
-    const targetTime = currentTime + elapsed;
-    const localTime = playerRef.current.getCurrentTime();
-    const timeDiff = Math.abs(localTime - targetTime);
-
-    lastAppliedSyncRef.current = timestamp;
+    const player = playerRef.current;
     isSyncingRef.current = true;
-
-    if (timeDiff > 0.75) {
-      playerRef.current.seekTo(targetTime, true);
-    }
-
-    if (state === 1 && playerRef.current.getPlayerState() !== 1) {
-      playerRef.current.playVideo();
-    } else if (state === 2 && playerRef.current.getPlayerState() !== 2) {
-      playerRef.current.pauseVideo();
-    }
-
-    lastStateRef.current = state;
-    lastObservedRef.current = { time: targetTime, at: Date.now(), state };
+    applySyncedPlayback(player, syncState);
 
     window.setTimeout(() => {
       isSyncingRef.current = false;
     }, 600);
-  }, [syncState]);
+  }, [applySyncedPlayback, syncState]);
 
 
   useEffect(() => {
@@ -220,11 +239,11 @@ export default function YouTubePlayer({ videoId, onStateSync, syncState, clientI
       const localTime = player.getCurrentTime();
       const drift = Math.abs(localTime - targetTime);
 
-      if (drift > 1.1) {
+      if (drift > 1.1 || player.getPlayerState() !== 1) {
         isSyncingRef.current = true;
         player.seekTo(targetTime, true);
         if (player.getPlayerState() !== 1) {
-          player.playVideo();
+          playSyncedVideo(player, targetTime);
         }
         lastStateRef.current = 1;
         lastObservedRef.current = { time: targetTime, at: Date.now(), state: 1 };
@@ -236,7 +255,7 @@ export default function YouTubePlayer({ videoId, onStateSync, syncState, clientI
     }, 1000);
 
     return () => window.clearInterval(intervalId);
-  }, [clientId]);
+  }, [clientId, playSyncedVideo]);
   return (
     <div className="relative h-full w-full bg-black">
       <div ref={containerRef} className="h-full w-full" />
