@@ -113,12 +113,18 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
   const peersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const processedSignalsRef = useRef<Set<string>>(new Set());
   const makingOfferRef = useRef<Set<string>>(new Set());
+  const pendingCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
+  const remoteMediaRef = useRef<Record<string, ParticipantMedia>>({});
 
   const memberNameById = useMemo(() => {
     const map = new Map<string, string>();
     for (const member of members) map.set(member.id, member.name);
     return map;
   }, [members]);
+
+  useEffect(() => {
+    remoteMediaRef.current = remoteMedia;
+  }, [remoteMedia]);
 
   const sendSignal = useCallback((to: string, type: FirestoreWebRTCSignal["type"], payload: SignalPayload) => {
     if (!activeUserId || !to || to === activeUserId) return;
@@ -135,6 +141,13 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
     localStreamRef.current?.getTracks().forEach((track) => {
       peer.addTrack(track, localStreamRef.current as MediaStream);
     });
+
+    if (!localStreamRef.current?.getVideoTracks().length) {
+      peer.addTransceiver("video", { direction: "recvonly" });
+    }
+    if (!localStreamRef.current?.getAudioTracks().length) {
+      peer.addTransceiver("audio", { direction: "recvonly" });
+    }
 
     peer.onicecandidate = (event) => {
       if (event.candidate) {
@@ -162,6 +175,7 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
 
     peer.onconnectionstatechange = () => {
       if (["failed", "closed", "disconnected"].includes(peer.connectionState)) {
+        peer.close();
         peersRef.current.delete(remoteId);
       }
     };
@@ -224,8 +238,22 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
       });
 
       peersRef.current.forEach((peer) => {
-        peer.getSenders().forEach((sender) => peer.removeTrack(sender));
-        stream.getTracks().forEach((track) => peer.addTrack(track, stream));
+        const videoTrack = stream.getVideoTracks()[0] || null;
+        const audioTrack = stream.getAudioTracks()[0] || null;
+        const videoSender = peer.getSenders().find((sender) => sender.track?.kind === "video");
+        const audioSender = peer.getSenders().find((sender) => sender.track?.kind === "audio");
+
+        if (videoSender) {
+          videoSender.replaceTrack(videoTrack);
+        } else if (videoTrack) {
+          peer.addTrack(videoTrack, stream);
+        }
+
+        if (audioSender) {
+          audioSender.replaceTrack(audioTrack);
+        } else if (audioTrack) {
+          peer.addTrack(audioTrack, stream);
+        }
       });
 
       await Promise.all(Array.from(peersRef.current.keys()).map((remoteId) => makeOffer(remoteId)));
@@ -285,12 +313,15 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
               id: signal.from,
               name: memberNameById.get(signal.from) || "Member",
               stream: prev[signal.from]?.stream || null,
-              cameraOn: Boolean(payload.cameraOn),
-              micOn: Boolean(payload.micOn),
+              cameraOn: Boolean(payload.cameraOn || prev[signal.from]?.stream?.getVideoTracks().length),
+              micOn: Boolean(payload.micOn || prev[signal.from]?.stream?.getAudioTracks().length),
               audioLevel: Number(payload.audioLevel || 0),
               speakingAt: Number(payload.speakingAt || 0),
             },
           }));
+          if (payload.cameraOn && !remoteMediaRef.current[signal.from]?.stream) {
+            window.setTimeout(() => makeOffer(signal.from), 250);
+          }
           return;
         }
 
@@ -298,16 +329,32 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
 
         try {
           if (signal.type === "offer") {
+            if (peer.signalingState !== "stable") {
+              await peer.setLocalDescription({ type: "rollback" });
+            }
             await peer.setRemoteDescription(signal.payload as RTCSessionDescriptionInit);
+            const pendingCandidates = pendingCandidatesRef.current.get(signal.from) || [];
+            pendingCandidatesRef.current.delete(signal.from);
+            await Promise.all(pendingCandidates.map((candidate) => peer.addIceCandidate(candidate)));
             const answer = await peer.createAnswer();
             await peer.setLocalDescription(answer);
             if (peer.localDescription) sendSignal(signal.from, "answer", peer.localDescription.toJSON());
           } else if (signal.type === "answer") {
-            if (!peer.currentRemoteDescription) {
+            if (peer.signalingState === "have-local-offer") {
               await peer.setRemoteDescription(signal.payload as RTCSessionDescriptionInit);
+              const pendingCandidates = pendingCandidatesRef.current.get(signal.from) || [];
+              pendingCandidatesRef.current.delete(signal.from);
+              await Promise.all(pendingCandidates.map((candidate) => peer.addIceCandidate(candidate)));
             }
           } else if (signal.type === "candidate") {
-            await peer.addIceCandidate(signal.payload as RTCIceCandidateInit);
+            const candidate = signal.payload as RTCIceCandidateInit;
+            if (peer.remoteDescription) {
+              await peer.addIceCandidate(candidate);
+            } else {
+              const pending = pendingCandidatesRef.current.get(signal.from) || [];
+              pending.push(candidate);
+              pendingCandidatesRef.current.set(signal.from, pending);
+            }
           }
         } catch (error) {
           console.error("WebRTC signal handling failed", error);
@@ -316,7 +363,7 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
     });
 
     return () => unsubscribe();
-  }, [activeUserId, createPeer, memberNameById, roomId, sendSignal]);
+  }, [activeUserId, createPeer, makeOffer, memberNameById, roomId, sendSignal]);
 
   useEffect(() => {
     if (!localStream || !isMicOn) {
