@@ -219,35 +219,72 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
     }
   }, [createPeer, sendSignal]);
 
-  const requestMedia = useCallback(async (nextCameraOn: boolean, nextMicOn: boolean) => {
-    if (!nextCameraOn && !nextMicOn) {
-      localStreamRef.current?.getVideoTracks().forEach((track) => {
-        track.enabled = false;
-        track.stop();
-      });
-      localStreamRef.current?.getAudioTracks().forEach((track) => {
-        track.enabled = false;
-        track.stop();
-      });
-      setLocalStream(null);
-      localStreamRef.current = null;
-      setIsCameraOn(false);
-      setIsMicOn(false);
-      setLocalAudioLevel(0);
-      sendSignal("*", "media-status", { cameraOn: false, micOn: false, audioLevel: 0, speakingAt: 0 });
-      return;
-    }
+  const publishLocalTracks = useCallback((stream: MediaStream) => {
+    let needsOffer = false;
+    const videoTrack = stream.getVideoTracks()[0] || null;
+    const audioTrack = stream.getAudioTracks()[0] || null;
 
+    peersRef.current.forEach((peer) => {
+      const videoSender = peer.getSenders().find((sender) => sender.track?.kind === "video")
+        || peer.getTransceivers().find((transceiver) => transceiver.receiver.track.kind === "video")?.sender;
+      const audioSender = peer.getSenders().find((sender) => sender.track?.kind === "audio")
+        || peer.getTransceivers().find((transceiver) => transceiver.receiver.track.kind === "audio")?.sender;
+
+      if (videoSender) {
+        videoSender.replaceTrack(videoTrack);
+      } else if (videoTrack) {
+        peer.addTrack(videoTrack, stream);
+        needsOffer = true;
+      }
+
+      if (audioSender) {
+        audioSender.replaceTrack(audioTrack);
+      } else if (audioTrack) {
+        peer.addTrack(audioTrack, stream);
+        needsOffer = true;
+      }
+    });
+
+    return needsOffer;
+  }, []);
+
+  const requestMedia = useCallback(async (nextCameraOn: boolean, nextMicOn: boolean) => {
     try {
       setPermissionError("");
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: nextCameraOn,
-        audio: nextMicOn,
-      });
+      const currentStream = localStreamRef.current;
+      let videoTrack = currentStream?.getVideoTracks()[0] || null;
+      let audioTrack = currentStream?.getAudioTracks()[0] || null;
 
-      localStreamRef.current?.getTracks().forEach((track) => track.stop());
-      localStreamRef.current = stream;
-      setLocalStream(stream);
+      if (!nextCameraOn && videoTrack) {
+        videoTrack.enabled = false;
+        videoTrack.stop();
+        videoTrack = null;
+      }
+
+      if (!nextMicOn && audioTrack) {
+        audioTrack.enabled = false;
+        audioTrack.stop();
+        audioTrack = null;
+        setLocalAudioLevel(0);
+      }
+
+      const needsVideo = nextCameraOn && (!videoTrack || videoTrack.readyState === "ended");
+      const needsAudio = nextMicOn && (!audioTrack || audioTrack.readyState === "ended");
+
+      if (needsVideo || needsAudio) {
+        const freshStream = await navigator.mediaDevices.getUserMedia({
+          video: needsVideo,
+          audio: needsAudio,
+        });
+        videoTrack = videoTrack || freshStream.getVideoTracks()[0] || null;
+        audioTrack = audioTrack || freshStream.getAudioTracks()[0] || null;
+      }
+
+      const nextTracks = [videoTrack, audioTrack].filter((track): track is MediaStreamTrack => Boolean(track));
+      const nextStream = nextTracks.length > 0 ? new MediaStream(nextTracks) : null;
+
+      localStreamRef.current = nextStream;
+      setLocalStream(nextStream);
       setIsCameraOn(nextCameraOn);
       setIsMicOn(nextMicOn);
       sendSignal("*", "media-status", {
@@ -257,31 +294,15 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
         speakingAt: Date.now(),
       });
 
-      peersRef.current.forEach((peer) => {
-        const videoTrack = stream.getVideoTracks()[0] || null;
-        const audioTrack = stream.getAudioTracks()[0] || null;
-        const videoSender = peer.getSenders().find((sender) => sender.track?.kind === "video");
-        const audioSender = peer.getSenders().find((sender) => sender.track?.kind === "audio");
-
-        if (videoSender) {
-          videoSender.replaceTrack(videoTrack);
-        } else if (videoTrack) {
-          peer.addTrack(videoTrack, stream);
-        }
-
-        if (audioSender) {
-          audioSender.replaceTrack(audioTrack);
-        } else if (audioTrack) {
-          peer.addTrack(audioTrack, stream);
-        }
-      });
-
-      await Promise.all(Array.from(peersRef.current.keys()).map((remoteId) => makeOffer(remoteId)));
+      const needsOffer = nextStream ? publishLocalTracks(nextStream) : publishLocalTracks(new MediaStream());
+      if (needsOffer) {
+        await Promise.all(Array.from(peersRef.current.keys()).map((remoteId) => makeOffer(remoteId)));
+      }
     } catch (error) {
       console.error("Camera or microphone permission failed", error);
       setPermissionError("Camera or microphone permission was blocked.");
     }
-  }, [makeOffer, sendSignal]);
+  }, [makeOffer, publishLocalTracks, sendSignal]);
 
   const handleCameraToggle = () => {
     requestMedia(!isCameraOn, isMicOn);
