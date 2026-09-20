@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Mic, MicOff, Video as VideoIcon, VideoOff } from "lucide-react";
+import { Mic, MicOff, UserPlus, Video as VideoIcon, VideoOff } from "lucide-react";
 
 import {
   FirestoreWebRTCSignal,
@@ -381,23 +381,33 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
         if (b.audioLevel !== a.audioLevel) return b.audioLevel - a.audioLevel;
         return Number(Boolean(b.cameraOn)) - Number(Boolean(a.cameraOn));
       })
-      .slice(0, 2);
+      .slice(0, 3);
   }, [activeUserId, currentUser.name, isCameraOn, isMicOn, localAudioLevel, localSpeakingAt, localStream, remoteMedia]);
 
+  const emptySlots = Math.max(0, 3 - visibleParticipants.length);
+
   return (
-    <section className="flex h-1/2 min-h-0 flex-col border-b border-white/10 bg-black/35 p-3">
-      <div className="mb-2 flex shrink-0 items-center justify-between">
+    <section className="flex h-full min-h-0 flex-col bg-black/35 p-3">
+      <div className="mb-2 shrink-0">
         <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-white/45">
           Members ({members.length})
         </p>
-        <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-bold text-white/45">
-          Live
-        </span>
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-rows-2 gap-2">
+      <div className="grid min-h-0 flex-1 grid-rows-3 gap-2">
         {visibleParticipants.map((participant) => (
           <VideoTile key={participant.id} participant={participant} />
+        ))}
+        {Array.from({ length: emptySlots }).map((_, index) => (
+          <div
+            key={`waiting-${index}`}
+            className="grid min-h-0 place-items-center rounded-lg border border-white/15 bg-white/[0.03] text-center"
+          >
+            <div className="text-white/25">
+              <UserPlus className="mx-auto mb-2 size-5" />
+              <p className="text-[10px] font-semibold">waiting for others</p>
+            </div>
+          </div>
         ))}
       </div>
 

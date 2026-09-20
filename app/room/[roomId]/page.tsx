@@ -6,6 +6,7 @@ import { useParams, useRouter } from "next/navigation";
 import {
   Sparkles,
   UserPlus,
+  Video as VideoIcon,
   MessageSquare,
   Users,
   Copy,
@@ -71,6 +72,7 @@ export default function RoomPage() {
 
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
+  const [showMembersMenu, setShowMembersMenu] = useState(false);
   const [isPinned, setIsPinned] = useState(false);
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
 
@@ -139,7 +141,7 @@ export default function RoomPage() {
   const roomTitle = `${hostName}'s room`;
 
   // Controls state
-  const [activeTab, setActiveTab] = useState<"chat" | "members">("chat");
+  const [activeTab, setActiveTab] = useState<"cam" | "chat">("cam");
 
   // Modals state
   const [isInviteOpen, setIsInviteOpen] = useState(false);
@@ -565,6 +567,56 @@ export default function RoomPage() {
 
           {/* Right: User Profile & Actions */}
           <div className="flex items-center gap-2.5">
+            <div className="relative">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowProfileMenu(false);
+                  setShowSettingsMenu(false);
+                  setShowMembersMenu((prev) => !prev);
+                }}
+                className="hidden h-9 items-center gap-2 rounded-xl border border-white/15 bg-white/8 px-3 text-xs font-bold text-white/85 transition hover:bg-white/15 sm:inline-flex"
+              >
+                <Users className="size-4 text-yellow-200" />
+                <span>{members.length} {members.length === 1 ? "member" : "members"}</span>
+              </button>
+
+              {showMembersMenu && (
+                <>
+                  <div
+                    className="fixed inset-0 z-[998] bg-transparent"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowMembersMenu(false);
+                    }}
+                  />
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    className="absolute right-0 top-11 z-[999] w-56 overflow-hidden rounded-2xl border border-white/20 bg-[#12051f]/95 p-2 text-white shadow-[0_12px_40px_rgba(0,0,0,0.8)] backdrop-blur-2xl animate-in fade-in zoom-in-95 duration-150"
+                  >
+                    {[...members]
+                      .sort((a, b) => {
+                        if (a.isHost && !b.isHost) return -1;
+                        if (!a.isHost && b.isHost) return 1;
+                        return a.name.localeCompare(b.name);
+                      })
+                      .map((member) => (
+                        <div key={member.id} className="flex items-center gap-3 rounded-xl px-3 py-2.5">
+                          <div className="grid size-8 place-items-center rounded-full bg-gradient-to-tr from-cyan-400 to-indigo-600 text-xs font-black text-white">
+                            {member.name.charAt(0).toUpperCase()}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="truncate text-xs font-bold text-white">{member.name}</p>
+                            <p className="text-[10px] text-white/45">{member.isHost ? "Host" : "Member"} · Online</p>
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                </>
+              )}
+            </div>
+
             <LiquidButton
               onClick={() => setIsInviteOpen(true)}
               variant="gold"
@@ -582,6 +634,7 @@ export default function RoomPage() {
                 onClick={(e) => {
                   e.stopPropagation();
                   setShowProfileMenu(false);
+                  setShowMembersMenu(false);
                   setShowSettingsMenu((prev) => !prev);
                 }}
                 className="rounded-full bg-white/10 p-2 text-white/70 transition hover:bg-white/20 hover:text-white"
@@ -672,6 +725,7 @@ export default function RoomPage() {
                 onClick={(e) => {
                   e.stopPropagation();
                   setShowSettingsMenu(false);
+                  setShowMembersMenu(false);
                   setShowProfileMenu((prev) => !prev);
                 }}
                 className="grid size-8 place-items-center overflow-hidden rounded-full border border-yellow-300/80 bg-gradient-to-tr from-cyan-400 via-blue-600 to-indigo-900 text-xs font-black text-white shadow-[0_0_12px_rgba(253,224,71,0.3)] transition hover:scale-105"
@@ -828,15 +882,20 @@ export default function RoomPage() {
 
           {/* Right Control Sidebar */}
           <aside className="flex min-h-0 w-80 shrink-0 flex-col border-l border-white/10 bg-black/50 backdrop-blur-xl">
-            <WebRTCRoomPanel
-              roomId={roomId}
-              currentUser={currentUser}
-              members={members}
-            />
-
-            <div className="flex h-1/2 min-h-0 flex-col">
             {/* Sidebar Tab Navigation */}
             <div className="flex shrink-0 border-b border-white/10 bg-white/5 px-2">
+              <button
+                onClick={() => setActiveTab("cam")}
+                className={`flex flex-1 items-center justify-center gap-2 py-3 text-xs font-bold transition border-b-2 ${
+                  activeTab === "cam"
+                    ? "border-yellow-300 text-yellow-200"
+                    : "border-transparent text-white/60 hover:text-white"
+                }`}
+              >
+                <VideoIcon className="size-4" />
+                <span>Cam</span>
+              </button>
+
               <button
                 onClick={() => setActiveTab("chat")}
                 className={`flex flex-1 items-center justify-center gap-2 py-3 text-xs font-bold transition border-b-2 ${
@@ -848,22 +907,18 @@ export default function RoomPage() {
                 <MessageSquare className="size-4" />
                 <span>Chat</span>
               </button>
-
-              <button
-                onClick={() => setActiveTab("members")}
-                className={`flex flex-1 items-center justify-center gap-2 py-3 text-xs font-bold transition border-b-2 ${
-                  activeTab === "members"
-                    ? "border-yellow-300 text-yellow-200"
-                    : "border-transparent text-white/60 hover:text-white"
-                }`}
-              >
-                <Users className="size-4" />
-                <span>Members ({members.length})</span>
-              </button>
             </div>
 
             {/* Tab Body Content */}
-            {activeTab === "chat" ? (
+            {activeTab === "cam" ? (
+              <div className="min-h-0 flex-1">
+                <WebRTCRoomPanel
+                  roomId={roomId}
+                  currentUser={currentUser}
+                  members={members}
+                />
+              </div>
+            ) : (
               <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-3">
                 {/* Chat Message History Container with Functional Scroll Buttons & Wheel Scroll */}
                 <div className="relative flex min-h-0 flex-1">
@@ -947,38 +1002,7 @@ export default function RoomPage() {
                   </button>
                 </form>
               </div>
-            ) : (
-              /* Members List */
-              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-4">
-                {[...members]
-                  .sort((a, b) => {
-                    if (a.isHost && !b.isHost) return -1;
-                    if (!a.isHost && b.isHost) return 1;
-                    return a.name.localeCompare(b.name);
-                  })
-                  .map((member) => (
-                  <div key={member.id} className="flex items-center justify-between rounded-2xl border border-white/15 bg-white/5 p-3">
-                    <div className="flex items-center gap-3">
-                      <div className="grid size-9 place-items-center rounded-full bg-gradient-to-tr from-cyan-400 to-indigo-600 text-xs font-black text-white">
-                        {member.name.charAt(0).toUpperCase()}
-                      </div>
-                      <div>
-                        <p className="text-xs font-bold text-white">
-                          {member.name}{" "}
-                          {member.isHost ? (
-                            <span className="text-[10px] text-yellow-200">(Host)</span>
-                          ) : (
-                            <span className="text-[10px] text-cyan-200">(Member)</span>
-                          )}
-                        </p>
-                        <p className="text-[10px] text-emerald-400">Online</p>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
             )}
-            </div>
           </aside>
         </div>
       </div>
