@@ -225,13 +225,17 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
     const audioTrack = stream.getAudioTracks()[0] || null;
 
     peersRef.current.forEach((peer) => {
-      const videoSender = peer.getSenders().find((sender) => sender.track?.kind === "video")
-        || peer.getTransceivers().find((transceiver) => transceiver.receiver.track.kind === "video")?.sender;
-      const audioSender = peer.getSenders().find((sender) => sender.track?.kind === "audio")
-        || peer.getTransceivers().find((transceiver) => transceiver.receiver.track.kind === "audio")?.sender;
+      const videoTransceiver = peer.getTransceivers().find((transceiver) => transceiver.receiver.track.kind === "video");
+      const audioTransceiver = peer.getTransceivers().find((transceiver) => transceiver.receiver.track.kind === "audio");
+      const videoSender = peer.getSenders().find((sender) => sender.track?.kind === "video") || videoTransceiver?.sender;
+      const audioSender = peer.getSenders().find((sender) => sender.track?.kind === "audio") || audioTransceiver?.sender;
 
       if (videoSender) {
         videoSender.replaceTrack(videoTrack);
+        if (videoTransceiver) {
+          videoTransceiver.direction = videoTrack ? "sendrecv" : "recvonly";
+          needsOffer = true;
+        }
       } else if (videoTrack) {
         peer.addTrack(videoTrack, stream);
         needsOffer = true;
@@ -239,6 +243,10 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
 
       if (audioSender) {
         audioSender.replaceTrack(audioTrack);
+        if (audioTransceiver) {
+          audioTransceiver.direction = audioTrack ? "sendrecv" : "recvonly";
+          needsOffer = true;
+        }
       } else if (audioTrack) {
         peer.addTrack(audioTrack, stream);
         needsOffer = true;
@@ -316,7 +324,7 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
     const remoteIds = members.map((member) => member.id).filter((id) => id && id !== activeUserId);
     for (const remoteId of remoteIds) {
       createPeer(remoteId);
-      if (activeUserId && activeUserId < remoteId) {
+      if ((isCameraOn || isMicOn) || (activeUserId && activeUserId < remoteId)) {
         makeOffer(remoteId);
       }
     }
@@ -332,7 +340,7 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
         });
       }
     });
-  }, [activeUserId, createPeer, makeOffer, members]);
+  }, [activeUserId, createPeer, isCameraOn, isMicOn, makeOffer, members]);
 
   useEffect(() => {
     if (!activeUserId) return;
