@@ -23,7 +23,6 @@ import {
   Maximize2,
   Bell,
   ChevronDown,
-  Globe,
   Settings,
   User,
   LogOut,
@@ -36,6 +35,8 @@ import {
 import { LiquidGlassCard } from "@/components/ui/liquid-weather-glass";
 import SplashCursor from "@/components/SplashCursor";
 import { LiquidButton } from "@/components/ui/liquid-glass-button";
+import YouTubePlayer from "@/components/YouTubePlayer";
+import YouTubeSearchModal from "@/components/YouTubeSearchModal";
 import {
   signInWithGooglePopup,
   signInWithEmail,
@@ -151,7 +152,22 @@ export default function RoomPage() {
 
   // Media Player State
   const [selectedMediaUrl, setSelectedMediaUrl] = useState<string>("");
-  const [mediaInputUrl, setMediaInputUrl] = useState<string>("");
+  const [youtubeSyncState, setYoutubeSyncState] = useState<{
+    state: number;
+    currentTime: number;
+    timestamp: number;
+  } | null>(null);
+
+  const handleYouTubeStateSync = useCallback((state: number, currentTime: number) => {
+    if (channelRef.current) {
+      channelRef.current.postMessage({
+        type: "MEDIA_SYNC",
+        state,
+        currentTime,
+        timestamp: Date.now(),
+      });
+    }
+  }, []);
 
   // Chat State
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -347,15 +363,18 @@ export default function RoomPage() {
 
     try {
       const channel = new BroadcastChannel(`syncspace_room_channel_${roomId}`);
+      // eslint-disable-next-line react-hooks/immutability
       channelRef.current = channel;
       channel.onmessage = (event) => {
-        const { type, mediaUrl } = event.data;
+        const { type, mediaUrl, state, currentTime, timestamp } = event.data;
         if (type === "USER_JOINED" || type === "USER_LEFT") {
           syncRoomMembers();
         } else if (type === "CHAT_MESSAGE") {
           syncChatMessages();
         } else if (type === "MEDIA_SELECTED") {
           setSelectedMediaUrl(mediaUrl);
+        } else if (type === "MEDIA_SYNC") {
+          setYoutubeSyncState({ state, currentTime, timestamp });
         }
       };
 
@@ -452,22 +471,7 @@ export default function RoomPage() {
     }
   };
 
-  // Play custom media
-  const handleSelectMediaSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!mediaInputUrl.trim()) return;
-    const url = mediaInputUrl.trim();
-    setSelectedMediaUrl(url);
-    setIsMediaOpen(false);
 
-    // Broadcast media change to all room members
-    if (channelRef.current) {
-      channelRef.current.postMessage({
-        type: "MEDIA_SELECTED",
-        mediaUrl: url,
-      });
-    }
-  };
 
   return (
     <main className="relative flex min-h-svh flex-col overflow-hidden bg-black text-white">
@@ -745,12 +749,11 @@ export default function RoomPage() {
             <div className="relative flex w-full max-w-4xl flex-1 flex-col items-center justify-center overflow-hidden rounded-3xl border border-white/20 bg-gradient-to-b from-purple-950/40 via-black/80 to-black/90 shadow-2xl backdrop-blur-xl">
               {selectedMediaUrl ? (
                 <div className="relative h-full w-full bg-black">
-                  {selectedMediaUrl.includes("youtube.com") || selectedMediaUrl.includes("youtu.be") ? (
-                    <iframe
-                      src={selectedMediaUrl.replace("watch?v=", "embed/")}
-                      className="h-full w-full border-0"
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                      allowFullScreen
+                  {selectedMediaUrl.includes("youtube.com") || selectedMediaUrl.includes("youtu.be") || selectedMediaUrl.length === 11 ? (
+                    <YouTubePlayer
+                      videoId={selectedMediaUrl}
+                      onStateSync={handleYouTubeStateSync}
+                      syncState={youtubeSyncState}
                     />
                   ) : (
                     <video
@@ -1075,91 +1078,17 @@ export default function RoomPage() {
         </div>
       )}
 
-      {/* Select Media Modal */}
-      {isMediaOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-md">
-          <LiquidGlassCard
-            draggable={false}
-            shadowIntensity="xs"
-            glowIntensity="none"
-            borderRadius="24px"
-            className="relative w-full max-w-md overflow-hidden border border-white/18 bg-white/8 p-7 text-white shadow-2xl backdrop-blur-xl"
-          >
-            <button
-              onClick={() => setIsMediaOpen(false)}
-              className="absolute right-5 top-5 rounded-full bg-white/10 p-1.5 text-white/70 transition hover:bg-white/20 hover:text-white"
-            >
-              <X className="size-5" />
-            </button>
-
-            <div className="text-center">
-              <h2 className="text-2xl font-black text-white">Select Media</h2>
-              <p className="mt-1 text-xs font-medium text-white/70">
-                Paste YouTube video link or direct MP4 stream URL
-              </p>
-            </div>
-
-            <form onSubmit={handleSelectMediaSubmit} className="mt-6 flex flex-col gap-4">
-              <div className="relative">
-                <Globe className="absolute left-3.5 top-3.5 size-4 text-yellow-200" />
-                <input
-                  type="url"
-                  required
-                  placeholder="https://www.youtube.com/watch?v=..."
-                  value={mediaInputUrl}
-                  onChange={(e) => setMediaInputUrl(e.target.value)}
-                  className="w-full rounded-xl border border-white/15 bg-black/60 py-3 pl-10 pr-4 text-xs text-white placeholder-white/40 outline-none focus:border-yellow-200"
-                />
-              </div>
-
-              {/* Sample Quick Pick Buttons */}
-              <div className="space-y-2">
-                <p className="text-[11px] font-bold text-white/60">Quick Pick Sample Trailers:</p>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const url = "https://www.youtube.com/watch?v=LembwKOiWBY";
-                      setSelectedMediaUrl(url);
-                      setIsMediaOpen(false);
-                      if (channelRef.current) {
-                        channelRef.current.postMessage({ type: "MEDIA_SELECTED", mediaUrl: url });
-                      }
-                    }}
-                    className="rounded-xl border border-white/15 bg-white/5 p-2 text-left text-[11px] font-bold transition hover:bg-white/15"
-                  >
-                    🚀 Space Sci-Fi Trailer
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const url = "https://www.youtube.com/watch?v=b9EkMc79ZSU";
-                      setSelectedMediaUrl(url);
-                      setIsMediaOpen(false);
-                      if (channelRef.current) {
-                        channelRef.current.postMessage({ type: "MEDIA_SELECTED", mediaUrl: url });
-                      }
-                    }}
-                    className="rounded-xl border border-white/15 bg-white/5 p-2 text-left text-[11px] font-bold transition hover:bg-white/15"
-                  >
-                    🎵 Synthwave Music Video
-                  </button>
-                </div>
-              </div>
-
-              <LiquidButton
-                type="submit"
-                variant="gold"
-                size="xl"
-                className="mt-2 w-full justify-center bg-yellow-300/95 font-black text-[#220038] shadow-md"
-              >
-                Play Media in Room
-              </LiquidButton>
-            </form>
-          </LiquidGlassCard>
-        </div>
-      )}
+      {/* Select Media & YouTube Search Modal */}
+      <YouTubeSearchModal
+        isOpen={isMediaOpen}
+        onClose={() => setIsMediaOpen(false)}
+        onSelectVideo={(videoId, fullUrl) => {
+          setSelectedMediaUrl(fullUrl);
+          if (channelRef.current) {
+            channelRef.current.postMessage({ type: "MEDIA_SELECTED", mediaUrl: fullUrl });
+          }
+        }}
+      />
 
       {/* Join Room Auth Modal for Unauthenticated Direct Links */}
       {showAuthModal && (
