@@ -161,6 +161,7 @@ export default function RoomPage() {
     timestamp: number;
     updatedBy?: string;
   } | null>(null);
+  const lastPlaybackTimestampRef = useRef(0);
 
   const handleYouTubeStateSync = useCallback((state: number, currentTime: number) => {
     const activeUserId = (currentUser.uid || currentUser.email || currentUser.name || "")
@@ -169,10 +170,15 @@ export default function RoomPage() {
       .replace(/[^a-z0-9]/g, "");
     if (!activeUserId) return;
 
+    const timestamp = Date.now();
+    lastPlaybackTimestampRef.current = timestamp;
+    setYoutubeSyncState({ state, currentTime, timestamp, updatedBy: activeUserId });
+
     updateRoomPlaybackFirestore(roomId, {
       state,
       currentTime,
       updatedBy: activeUserId,
+      updatedAt: timestamp,
     });
 
     if (channelRef.current) {
@@ -180,7 +186,7 @@ export default function RoomPage() {
         type: "MEDIA_SYNC",
         state,
         currentTime,
-        timestamp: Date.now(),
+        timestamp,
         updatedBy: activeUserId,
       });
     }
@@ -365,17 +371,16 @@ export default function RoomPage() {
         setMediaTitle(typeof data.mediaTitle === "string" ? data.mediaTitle : "");
       }
 
-      if (data.playback) {
-        const activeUserId = getActiveUserId();
-        if (!data.playback.updatedBy || data.playback.updatedBy !== activeUserId) {
-          setYoutubeSyncState({
-            state: data.playback.state,
-            currentTime: data.playback.currentTime,
-            timestamp: data.playback.updatedAt,
-            updatedBy: data.playback.updatedBy,
-          });
-        }
-      }    });
+      if (data.playback && data.playback.updatedAt > lastPlaybackTimestampRef.current) {
+        lastPlaybackTimestampRef.current = data.playback.updatedAt;
+        setYoutubeSyncState({
+          state: data.playback.state,
+          currentTime: data.playback.currentTime,
+          timestamp: data.playback.updatedAt,
+          updatedBy: data.playback.updatedBy,
+        });
+      }
+    });
 
     const handleUnload = () => {
       const activeUserId = getActiveUserId();
@@ -407,7 +412,8 @@ export default function RoomPage() {
         } else if (type === "MEDIA_SELECTED") {
           setSelectedMediaUrl(mediaUrl);
         } else if (type === "MEDIA_SYNC") {
-          if (updatedBy !== getActiveUserId()) {
+          if (timestamp > lastPlaybackTimestampRef.current) {
+            lastPlaybackTimestampRef.current = timestamp;
             setYoutubeSyncState({ state, currentTime, timestamp, updatedBy });
           }
         }
@@ -1109,7 +1115,9 @@ export default function RoomPage() {
           const selectedTitle = title || "YouTube video";
           setSelectedMediaUrl(fullUrl);
           setMediaTitle(selectedTitle);
-          setYoutubeSyncState({ state: 1, currentTime: 0, timestamp: Date.now(), updatedBy: getActiveUserId() });
+          const timestamp = Date.now();
+          lastPlaybackTimestampRef.current = timestamp;
+          setYoutubeSyncState({ state: 1, currentTime: 0, timestamp, updatedBy: getActiveUserId() });
           updateRoomMediaFirestore(roomId, {
             url: fullUrl,
             type: videoId ? "youtube" : "direct",
@@ -1358,6 +1366,7 @@ export default function RoomPage() {
     </main>
   );
 }
+
 
 
 

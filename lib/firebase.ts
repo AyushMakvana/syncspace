@@ -361,7 +361,7 @@ export async function updateRoomMediaFirestore(
         mediaType: media.type,
         mediaTitle: media.title || "",
         playback: {
-          state: 2,
+          state: 1,
           currentTime: 0,
           updatedAt: now,
           updatedBy: media.selectedBy || "",
@@ -377,10 +377,10 @@ export async function updateRoomMediaFirestore(
 
 export async function updateRoomPlaybackFirestore(
   roomId: string,
-  playback: { state: number; currentTime: number; updatedBy?: string }
+  playback: { state: number; currentTime: number; updatedBy?: string; updatedAt?: number }
 ) {
   try {
-    const now = Date.now();
+    const now = playback.updatedAt || Date.now();
     const roomRef = doc(db, "rooms", roomId);
     await setDoc(
       roomRef,
@@ -400,6 +400,11 @@ export async function updateRoomPlaybackFirestore(
   }
 }
 export { app, auth, db, googleProvider, analytics, signOut };
+
+
+
+
+
 
 
 
