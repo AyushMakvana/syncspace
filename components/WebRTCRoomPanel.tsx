@@ -116,6 +116,7 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
   const peersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const processedSignalsRef = useRef<Set<string>>(new Set());
   const makingOfferRef = useRef<Set<string>>(new Set());
+  const ignoredOffersRef = useRef<Set<string>>(new Set());
   const pendingCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const remoteMediaRef = useRef<Record<string, ParticipantMedia>>({});
 
@@ -206,6 +207,7 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
   const makeOffer = useCallback(async (remoteId: string) => {
     const peer = createPeer(remoteId);
     if (makingOfferRef.current.has(remoteId)) return;
+    if (peer.signalingState !== "stable") return;
 
     try {
       makingOfferRef.current.add(remoteId);
@@ -324,7 +326,7 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
     const remoteIds = members.map((member) => member.id).filter((id) => id && id !== activeUserId);
     for (const remoteId of remoteIds) {
       createPeer(remoteId);
-      if ((isCameraOn || isMicOn) || (activeUserId && activeUserId < remoteId)) {
+      if (activeUserId && activeUserId < remoteId) {
         makeOffer(remoteId);
       }
     }
@@ -340,7 +342,7 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
         });
       }
     });
-  }, [activeUserId, createPeer, isCameraOn, isMicOn, makeOffer, members]);
+  }, [activeUserId, createPeer, makeOffer, members]);
 
   useEffect(() => {
     if (!activeUserId) return;
@@ -375,10 +377,18 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
         }
 
         const peer = createPeer(signal.from);
+        const isPolitePeer = activeUserId > signal.from;
 
         try {
           if (signal.type === "offer") {
-            if (peer.signalingState !== "stable") {
+            const offerCollision = makingOfferRef.current.has(signal.from) || peer.signalingState !== "stable";
+            if (offerCollision && !isPolitePeer) {
+              ignoredOffersRef.current.add(signal.from);
+              return;
+            }
+
+            ignoredOffersRef.current.delete(signal.from);
+            if (offerCollision) {
               await peer.setLocalDescription({ type: "rollback" });
             }
             await peer.setRemoteDescription(signal.payload as RTCSessionDescriptionInit);
@@ -397,6 +407,7 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
             }
           } else if (signal.type === "candidate") {
             const candidate = signal.payload as RTCIceCandidateInit;
+            if (ignoredOffersRef.current.has(signal.from)) return;
             if (peer.remoteDescription) {
               await peer.addIceCandidate(candidate);
             } else {
@@ -451,6 +462,20 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
       audioContext.close();
     };
   }, [activeUserId, isCameraOn, isMicOn, localSpeakingAt, localStream, members, sendSignal]);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      members.forEach((member) => {
+        if (member.id === activeUserId) return;
+        const remote = remoteMediaRef.current[member.id];
+        if (remote?.cameraOn && !remote.stream) {
+          makeOffer(member.id);
+        }
+      });
+    }, 2500);
+
+    return () => window.clearInterval(intervalId);
+  }, [activeUserId, makeOffer, members]);
 
   useEffect(() => {
     const peers = peersRef.current;
