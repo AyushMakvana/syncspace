@@ -38,9 +38,14 @@ type SignalPayload =
   | RTCIceCandidateInit
   | { cameraOn?: boolean; micOn?: boolean; audioLevel?: number; speakingAt?: number };
 
-const turnUrl = process.env.NEXT_PUBLIC_TURN_URL;
+const rawTurnUrl = process.env.NEXT_PUBLIC_TURN_URL?.trim();
 const turnUsername = process.env.NEXT_PUBLIC_TURN_USERNAME;
 const turnCredential = process.env.NEXT_PUBLIC_TURN_CREDENTIAL;
+const turnUrl = rawTurnUrl
+  ? /^(turn|turns):/i.test(rawTurnUrl)
+    ? rawTurnUrl
+    : `turn:${rawTurnUrl}`
+  : "";
 
 const rtcConfig: RTCConfiguration = {
   iceServers: [
@@ -53,7 +58,6 @@ const rtcConfig: RTCConfiguration = {
         }]
       : []),
   ],
-  iceTransportPolicy: turnUrl ? "all" : "all",
 };
 
 function getUserId(user: { name: string; email: string; uid?: string }) {
