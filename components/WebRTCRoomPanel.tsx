@@ -58,6 +58,7 @@ const rtcConfig: RTCConfiguration = {
         }]
       : []),
   ],
+  iceTransportPolicy: turnUrl ? "relay" : "all",
 };
 
 function getUserId(user: { name: string; email: string; uid?: string }) {
@@ -137,6 +138,7 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
   const ignoredOffersRef = useRef<Set<string>>(new Set());
   const pendingCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const remoteMediaRef = useRef<Record<string, ParticipantMedia>>({});
+  const mountedAtRef = useRef(0);
 
   const memberNameById = useMemo(() => {
     const map = new Map<string, string>();
@@ -147,6 +149,10 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
   useEffect(() => {
     remoteMediaRef.current = remoteMedia;
   }, [remoteMedia]);
+
+  useEffect(() => {
+    mountedAtRef.current = Date.now();
+  }, []);
 
   const sendSignal = useCallback((to: string, type: FirestoreWebRTCSignal["type"], payload: SignalPayload) => {
     if (!activeUserId || !to || to === activeUserId) return;
@@ -222,14 +228,14 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
     return peer;
   }, [memberNameById, sendSignal]);
 
-  const makeOffer = useCallback(async (remoteId: string) => {
+  const makeOffer = useCallback(async (remoteId: string, iceRestart = false) => {
     const peer = createPeer(remoteId);
     if (makingOfferRef.current.has(remoteId)) return;
     if (peer.signalingState !== "stable") return;
 
     try {
       makingOfferRef.current.add(remoteId);
-      const offer = await peer.createOffer();
+      const offer = await peer.createOffer({ iceRestart });
       await peer.setLocalDescription(offer);
       if (peer.localDescription) sendSignal(remoteId, "offer", peer.localDescription.toJSON());
     } catch (error) {
@@ -368,6 +374,7 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
     const unsubscribe = subscribeToRoomFirestore(roomId, (data) => {
       const signals = data.webrtcSignals || [];
       signals.forEach(async (signal) => {
+        if (signal.createdAt < mountedAtRef.current - 1000) return;
         if (processedSignalsRef.current.has(signal.id)) return;
         if (signal.from === activeUserId) return;
         if (signal.to !== activeUserId && signal.to !== "*") return;
@@ -444,6 +451,23 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
   }, [activeUserId, createPeer, makeOffer, memberNameById, roomId, sendSignal]);
 
   useEffect(() => {
+    if (!activeUserId) return;
+
+    const publishStatus = () => {
+      sendSignal("*", "media-status", {
+        cameraOn: isCameraOn,
+        micOn: isMicOn,
+        audioLevel: localAudioLevel,
+        speakingAt: localSpeakingAt,
+      });
+    };
+
+    publishStatus();
+    const intervalId = window.setInterval(publishStatus, 1500);
+    return () => window.clearInterval(intervalId);
+  }, [activeUserId, isCameraOn, isMicOn, localAudioLevel, localSpeakingAt, sendSignal]);
+
+  useEffect(() => {
     if (!localStream || !isMicOn) {
       return;
     }
@@ -487,7 +511,7 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
         if (member.id === activeUserId) return;
         const remote = remoteMediaRef.current[member.id];
         if (remote?.cameraOn && !remote.stream) {
-          makeOffer(member.id);
+          makeOffer(member.id, true);
         }
       });
     }, 2500);
