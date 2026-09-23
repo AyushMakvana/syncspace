@@ -38,8 +38,22 @@ type SignalPayload =
   | RTCIceCandidateInit
   | { cameraOn?: boolean; micOn?: boolean; audioLevel?: number; speakingAt?: number };
 
+const turnUrl = process.env.NEXT_PUBLIC_TURN_URL;
+const turnUsername = process.env.NEXT_PUBLIC_TURN_USERNAME;
+const turnCredential = process.env.NEXT_PUBLIC_TURN_CREDENTIAL;
+
 const rtcConfig: RTCConfiguration = {
-  iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    ...(turnUrl && turnUsername && turnCredential
+      ? [{
+          urls: turnUrl,
+          username: turnUsername,
+          credential: turnCredential,
+        }]
+      : []),
+  ],
+  iceTransportPolicy: turnUrl ? "all" : "all",
 };
 
 function getUserId(user: { name: string; email: string; uid?: string }) {
