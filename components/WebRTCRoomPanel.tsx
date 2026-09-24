@@ -38,29 +38,12 @@ type SignalPayload =
   | RTCIceCandidateInit
   | { cameraOn?: boolean; micOn?: boolean; audioLevel?: number; speakingAt?: number };
 
-function getConfiguredIceServers(): RTCIceServer[] {
-  const rawIceServers = process.env.NEXT_PUBLIC_ICE_SERVERS_JSON?.trim();
-  if (rawIceServers) {
-    try {
-      const parsed = JSON.parse(rawIceServers) as RTCIceServer[];
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-    } catch (error) {
-      console.error("Invalid NEXT_PUBLIC_ICE_SERVERS_JSON", error);
-    }
-  }
-
-  return [{ urls: "stun:stun.l.google.com:19302" }];
-}
-
-const iceServers = getConfiguredIceServers();
-const hasTurnServer = iceServers.some((server) => {
-  const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
-  return urls.some((url) => /^turns?:/i.test(url));
-});
-
 const rtcConfig: RTCConfiguration = {
-  iceServers,
-  iceTransportPolicy: hasTurnServer ? "relay" : "all",
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun.relay.metered.ca:80" },
+  ],
+  iceTransportPolicy: "all",
 };
 
 function getUserId(user: { name: string; email: string; uid?: string }) {
@@ -531,6 +514,22 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
 
     return () => window.clearInterval(intervalId);
   }, [activeUserId, makeOffer, members]);
+
+  useEffect(() => {
+    if (!isCameraOn && !isMicOn) return;
+
+    const sendFreshOffers = () => {
+      members.forEach((member) => {
+        if (member.id !== activeUserId) {
+          makeOffer(member.id, true);
+        }
+      });
+    };
+
+    sendFreshOffers();
+    const intervalId = window.setInterval(sendFreshOffers, 4000);
+    return () => window.clearInterval(intervalId);
+  }, [activeUserId, isCameraOn, isMicOn, makeOffer, members]);
 
   useEffect(() => {
     const peers = peersRef.current;
