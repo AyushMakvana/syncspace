@@ -38,27 +38,29 @@ type SignalPayload =
   | RTCIceCandidateInit
   | { cameraOn?: boolean; micOn?: boolean; audioLevel?: number; speakingAt?: number };
 
-const rawTurnUrl = process.env.NEXT_PUBLIC_TURN_URL?.trim();
-const turnUsername = process.env.NEXT_PUBLIC_TURN_USERNAME;
-const turnCredential = process.env.NEXT_PUBLIC_TURN_CREDENTIAL;
-const turnUrl = rawTurnUrl
-  ? /^(turn|turns):/i.test(rawTurnUrl)
-    ? rawTurnUrl
-    : `turn:${rawTurnUrl}`
-  : "";
+function getConfiguredIceServers(): RTCIceServer[] {
+  const rawIceServers = process.env.NEXT_PUBLIC_ICE_SERVERS_JSON?.trim();
+  if (rawIceServers) {
+    try {
+      const parsed = JSON.parse(rawIceServers) as RTCIceServer[];
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    } catch (error) {
+      console.error("Invalid NEXT_PUBLIC_ICE_SERVERS_JSON", error);
+    }
+  }
+
+  return [{ urls: "stun:stun.l.google.com:19302" }];
+}
+
+const iceServers = getConfiguredIceServers();
+const hasTurnServer = iceServers.some((server) => {
+  const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+  return urls.some((url) => /^turns?:/i.test(url));
+});
 
 const rtcConfig: RTCConfiguration = {
-  iceServers: [
-    { urls: "stun:stun.l.google.com:19302" },
-    ...(turnUrl && turnUsername && turnCredential
-      ? [{
-          urls: turnUrl,
-          username: turnUsername,
-          credential: turnCredential,
-        }]
-      : []),
-  ],
-  iceTransportPolicy: turnUrl ? "relay" : "all",
+  iceServers,
+  iceTransportPolicy: hasTurnServer ? "relay" : "all",
 };
 
 function getUserId(user: { name: string; email: string; uid?: string }) {
