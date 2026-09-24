@@ -142,8 +142,8 @@ export default function WelcomePage() {
       setIsLoggedIn(true);
       closeModal();
       enterRoom(user.name);
-    } else if (error) {
-      console.error("Firebase Google Auth Error:", error);
+    } else if (error && !error.includes("popup-closed-by-user")) {
+      console.warn("Firebase Google Auth warning:", error);
     }
   };
 

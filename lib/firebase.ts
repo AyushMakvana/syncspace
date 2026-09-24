@@ -71,7 +71,9 @@ export async function signInWithGooglePopup() {
     return { user: profile, error: null };
   } catch (err: unknown) {
     const errorMsg = err instanceof Error ? err.message : "Google sign-in error";
-    console.error("Google Auth Error details:", err);
+    if (!errorMsg.includes("popup-closed-by-user")) {
+      console.warn("Google Auth warning:", err);
+    }
     if (typeof window !== "undefined" && errorMsg.includes("unauthorized-domain")) {
       alert(
         "Firebase Domain Error:\n\n" +

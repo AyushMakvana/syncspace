@@ -50,6 +50,10 @@ function getUserId(user: { name: string; email: string; uid?: string }) {
   return (user.uid || user.email || user.name || "").toLowerCase().trim().replace(/[^a-z0-9]/g, "");
 }
 
+function normalizeIdentity(value: string) {
+  return value.toLowerCase().trim().replace(/[^a-z0-9]/g, "");
+}
+
 function VideoTile({ participant }: { participant: ParticipantMedia }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -120,6 +124,14 @@ function VideoTile({ participant }: { participant: ParticipantMedia }) {
 
 export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTCRoomPanelProps) {
   const activeUserId = useMemo(() => getUserId(currentUser), [currentUser]);
+  const localIdentityKeys = useMemo(() => {
+    return new Set(
+      [currentUser.uid, currentUser.email, currentUser.name, activeUserId]
+        .filter((value): value is string => Boolean(value))
+        .map(normalizeIdentity)
+        .filter(Boolean)
+    );
+  }, [activeUserId, currentUser.email, currentUser.name, currentUser.uid]);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [isCameraOn, setIsCameraOn] = useState(false);
   const [isMicOn, setIsMicOn] = useState(false);
@@ -133,6 +145,7 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
   const makingOfferRef = useRef<Set<string>>(new Set());
   const ignoredOffersRef = useRef<Set<string>>(new Set());
   const pendingCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
+  const remoteStreamsRef = useRef<Map<string, MediaStream>>(new Map());
   const remoteMediaRef = useRef<Record<string, ParticipantMedia>>({});
   const mountedAtRef = useRef(0);
 
@@ -180,7 +193,15 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
     };
 
     peer.ontrack = (event) => {
-      const [stream] = event.streams;
+      let stream = event.streams[0] || remoteStreamsRef.current.get(remoteId);
+      if (!stream) {
+        stream = new MediaStream();
+      }
+      if (!stream.getTracks().some((track) => track.id === event.track.id)) {
+        stream.addTrack(event.track);
+      }
+      remoteStreamsRef.current.set(remoteId, stream);
+
       const hasVideo = stream.getVideoTracks().some((track) => track.enabled);
       const hasAudio = stream.getAudioTracks().some((track) => track.enabled);
       stream.getVideoTracks().forEach((track) => {
@@ -200,6 +221,20 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
         };
         track.onended = track.onmute;
       });
+      event.track.onunmute = () => {
+        setRemoteMedia((prev) => ({
+          ...prev,
+          [remoteId]: {
+            id: remoteId,
+            name: prev[remoteId]?.name || memberNameById.get(remoteId) || "Member",
+            stream,
+            cameraOn: event.track.kind === "video" ? true : Boolean(prev[remoteId]?.cameraOn),
+            micOn: event.track.kind === "audio" ? true : Boolean(prev[remoteId]?.micOn),
+            audioLevel: prev[remoteId]?.audioLevel || 0,
+            speakingAt: prev[remoteId]?.speakingAt || 0,
+          },
+        }));
+      };
       setRemoteMedia((prev) => ({
         ...prev,
         [remoteId]: {
@@ -218,6 +253,7 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
       if (["failed", "closed", "disconnected"].includes(peer.connectionState)) {
         peer.close();
         peersRef.current.delete(remoteId);
+        remoteStreamsRef.current.delete(remoteId);
       }
     };
 
@@ -232,10 +268,11 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
     try {
       makingOfferRef.current.add(remoteId);
       const offer = await peer.createOffer({ iceRestart });
+      if (peer.signalingState !== "stable") return;
       await peer.setLocalDescription(offer);
       if (peer.localDescription) sendSignal(remoteId, "offer", peer.localDescription.toJSON());
     } catch (error) {
-      console.error("WebRTC offer failed", error);
+      console.warn("WebRTC offer skipped", error);
     } finally {
       makingOfferRef.current.delete(remoteId);
     }
@@ -343,7 +380,13 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
   };
 
   useEffect(() => {
-    const remoteIds = members.map((member) => member.id).filter((id) => id && id !== activeUserId);
+    const remoteIds = members
+      .filter((member) => {
+        const idKey = normalizeIdentity(member.id);
+        const nameKey = normalizeIdentity(member.name);
+        return idKey && !localIdentityKeys.has(idKey) && !localIdentityKeys.has(nameKey);
+      })
+      .map((member) => member.id);
     for (const remoteId of remoteIds) {
       createPeer(remoteId);
       if (activeUserId && activeUserId < remoteId) {
@@ -362,7 +405,7 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
         });
       }
     });
-  }, [activeUserId, createPeer, makeOffer, members]);
+  }, [activeUserId, createPeer, localIdentityKeys, makeOffer, members]);
 
   useEffect(() => {
     if (!activeUserId) return;
@@ -438,7 +481,7 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
             }
           }
         } catch (error) {
-          console.error("WebRTC signal handling failed", error);
+          console.warn("WebRTC signal handling skipped", error);
         }
       });
     });
@@ -533,10 +576,12 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
 
   useEffect(() => {
     const peers = peersRef.current;
+    const remoteStreams = remoteStreamsRef.current;
     return () => {
       localStreamRef.current?.getTracks().forEach((track) => track.stop());
       peers.forEach((peer) => peer.close());
       peers.clear();
+      remoteStreams.clear();
     };
   }, []);
 
@@ -552,32 +597,49 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
       isLocal: true,
     };
 
-    const memberParticipants = members.map((member) => {
-      if (member.id === activeUserId) return localParticipant;
-
-      const remote = remoteMedia[member.id];
-      return {
-        id: member.id,
-        name: member.name,
-        stream: remote?.stream || null,
-        cameraOn: Boolean(remote?.cameraOn),
-        micOn: Boolean(remote?.micOn),
-        audioLevel: remote?.audioLevel || 0,
-        speakingAt: remote?.speakingAt || 0,
-      };
-    });
-
-    const hasLocalMember = memberParticipants.some((participant) => participant.id === localParticipant.id);
-    const stableParticipants = hasLocalMember ? memberParticipants : [localParticipant, ...memberParticipants];
-
-    return stableParticipants
+    const seenIds = new Set<string>([localParticipant.id]);
+    const remoteParticipants = members
+      .filter((member) => {
+        const idKey = normalizeIdentity(member.id);
+        const nameKey = normalizeIdentity(member.name);
+        return idKey && !localIdentityKeys.has(idKey) && !localIdentityKeys.has(nameKey);
+      })
+      .map((member) => {
+        const remote = remoteMedia[member.id];
+        return {
+          id: member.id,
+          name: member.name,
+          stream: remote?.stream || null,
+          cameraOn: Boolean(remote?.cameraOn),
+          micOn: Boolean(remote?.micOn),
+          audioLevel: remote?.audioLevel || 0,
+          speakingAt: remote?.speakingAt || 0,
+        };
+      })
+      .filter((participant) => {
+        if (seenIds.has(participant.id)) return false;
+        seenIds.add(participant.id);
+        return true;
+      })
       .sort((a, b) => {
         if (b.speakingAt !== a.speakingAt) return b.speakingAt - a.speakingAt;
         if (b.audioLevel !== a.audioLevel) return b.audioLevel - a.audioLevel;
         return Number(Boolean(b.cameraOn)) - Number(Boolean(a.cameraOn));
-      })
-      .slice(0, 3);
-  }, [activeUserId, currentUser.name, isCameraOn, isMicOn, localAudioLevel, localSpeakingAt, localStream, members, remoteMedia]);
+      });
+
+    return [localParticipant, ...remoteParticipants].slice(0, 3);
+  }, [
+    activeUserId,
+    currentUser.name,
+    isCameraOn,
+    isMicOn,
+    localAudioLevel,
+    localSpeakingAt,
+    localIdentityKeys,
+    localStream,
+    members,
+    remoteMedia,
+  ]);
 
   const emptySlots = Math.max(0, 3 - visibleParticipants.length);
 

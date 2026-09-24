@@ -1156,8 +1156,8 @@ export default function RoomPage() {
                       if (user) {
                         setCurrentUser(user);
                         setShowAuthModal(false);
-                      } else if (error) {
-                        console.error("Firebase Google Auth Error:", error);
+                      } else if (error && !error.includes("popup-closed-by-user")) {
+                        console.warn("Firebase Google Auth warning:", error);
                       }
                     }}
                     size="xl"
