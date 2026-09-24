@@ -71,13 +71,23 @@ function VideoTile({ participant }: { participant: ParticipantMedia }) {
 
   useEffect(() => {
     if (videoRef.current) {
-      const nextVideoStream = participant.cameraOn ? participant.stream : null;
+      const nextVideoStream = participant.cameraOn && participant.stream
+        ? new MediaStream(participant.stream.getVideoTracks())
+        : null;
       if (videoRef.current.srcObject !== nextVideoStream) {
         videoRef.current.srcObject = nextVideoStream;
       }
+      videoRef.current.play().catch(() => {
+        // Browser will retry playback after metadata is available.
+      });
     }
-    if (audioRef.current && audioRef.current.srcObject !== participant.stream) {
-      audioRef.current.srcObject = participant.stream;
+    if (audioRef.current) {
+      const nextAudioStream = participant.stream
+        ? new MediaStream(participant.stream.getAudioTracks())
+        : null;
+      if (audioRef.current.srcObject !== nextAudioStream) {
+        audioRef.current.srcObject = nextAudioStream;
+      }
     }
   }, [participant.cameraOn, participant.stream]);
 
@@ -92,7 +102,8 @@ function VideoTile({ participant }: { participant: ParticipantMedia }) {
           ref={videoRef}
           autoPlay
           playsInline
-          muted={participant.isLocal}
+          muted
+          onLoadedMetadata={(event) => event.currentTarget.play().catch(() => {})}
           className="h-full w-full object-cover"
         />
       ) : (
