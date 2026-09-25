@@ -16,6 +16,7 @@ import {
   initializeFirestore,
   memoryLocalCache,
   doc,
+  FieldPath,
   onSnapshot,
   setDoc,
   updateDoc,
@@ -24,13 +25,13 @@ import {
 } from "firebase/firestore";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyD-2dNCPlAOXvJTBIvKzQvnntwU7k6-jq8",
-  authDomain: "syncspace-e14ab.firebaseapp.com",
-  projectId: "syncspace-e14ab",
-  storageBucket: "syncspace-e14ab.firebasestorage.app",
-  messagingSenderId: "1017766123091",
-  appId: "1:1017766123091:web:9070d7c249986837e958a6",
-  measurementId: "G-G3HTQ90G4P",
+  apiKey: "AIzaSyB6YnDipCzWs8F4kx3heSOQr14oPqTMyxc",
+  authDomain: "syncspace-c6f5e.firebaseapp.com",
+  projectId: "syncspace-c6f5e",
+  storageBucket: "syncspace-c6f5e.firebasestorage.app",
+  messagingSenderId: "361908939854",
+  appId: "1:361908939854:web:073a6a1f6adcadbbd2e71f",
+  measurementId: "G-E3MGQ2FRQT",
 };
 
 // Initialize Firebase (SSR safe)
@@ -148,20 +149,33 @@ export function subscribeToAuth(callback: (user: { name: string; email: string; 
 
 // Real-time Room Sync via Firestore across ALL Browsers & Devices
 export async function registerRoomCode(code: string, roomId: string) {
+  const normalizedCode = code.toUpperCase();
+  const key = `${normalizedCode}:${roomId}`;
+  if (registeredRoomCodes.has(key)) return;
+  registeredRoomCodes.add(key);
   try {
-    await setDoc(doc(db, "codes", code.toUpperCase()), { roomId, createdAt: Date.now() }, { merge: true });
+    await setDoc(doc(db, "codes", normalizedCode), { roomId, createdAt: Date.now() }, { merge: true });
   } catch {
+    registeredRoomCodes.delete(key);
     // catch permission or network errors silently
   }
 }
 
+export async function signOutUser() {
+  await signOut(auth);
+  if (typeof window !== "undefined") localStorage.removeItem("syncspace_current_user");
+}
+
+const registeredRoomCodes = new Set<string>();
+
 export async function resolveRoomCode(input: string): Promise<string> {
   const cleanInput = input.trim();
-  if (cleanInput.includes("/room/")) {
-    return cleanInput.split("/room/")[1].split("?")[0].split("#")[0];
+  const roomPathMatch = cleanInput.match(/\/room\/([^/?#]+)/i);
+  if (roomPathMatch?.[1]) {
+    return decodeURIComponent(roomPathMatch[1]);
   }
   if (cleanInput.endsWith("-room")) {
-    return cleanInput.toLowerCase();
+    return cleanInput;
   }
 
   // Lookup in Firestore
@@ -175,15 +189,7 @@ export async function resolveRoomCode(input: string): Promise<string> {
     // ignore
   }
 
-  // If input contains hyphen e.g. AYUSHMAKVANA-2779
-  if (cleanInput.includes("-")) {
-    const prefix = cleanInput.split("-")[0].toLowerCase().replace(/[^a-zA-Z0-9]/g, "");
-    if (prefix) return `${prefix}-room`;
-  }
-
-  // Fallback: treat as username or room slug
-  const slug = cleanInput.toLowerCase().replace(/[^a-zA-Z0-9]/g, "");
-  return slug ? `${slug}-room` : cleanInput;
+  throw new Error("Room code was not found. Ask the host for a current invitation link or code.");
 }
 
 interface FirestoreMemberPresence {
@@ -215,6 +221,22 @@ export interface FirestoreWebRTCSignal {
   type: "offer" | "answer" | "candidate" | "media-status";
   payload: unknown;
   createdAt: number;
+}
+
+export interface MqttRelayMessage {
+  type?: "USER_PRESENCE" | "USER_LEFT" | "CHAT_MESSAGE" | "MEDIA_SELECTED" | "MEDIA_SYNC" | "WEBRTC_SIGNAL";
+  senderClientId?: string;
+  signal?: FirestoreWebRTCSignal;
+  member?: { id?: string; name?: string; isHost?: boolean; online?: boolean; lastSeen?: number };
+  user?: string;
+  text?: string;
+  id?: string;
+  time?: string;
+  mediaUrl?: string;
+  state?: number;
+  currentTime?: number;
+  timestamp?: number;
+  updatedBy?: string;
 }
 
 export interface FirestoreRoomData {
@@ -284,7 +306,8 @@ function normalizeWebRTCSignals(data: Record<string, unknown>): FirestoreWebRTCS
 }
 export function subscribeToRoomFirestore(
   roomId: string,
-  callback: (data: FirestoreRoomData) => void
+  callback: (data: FirestoreRoomData) => void,
+  onError?: () => void
 ) {
   try {
     const roomRef = doc(db, "rooms", roomId);
@@ -293,10 +316,12 @@ export function subscribeToRoomFirestore(
       (snapshot) => {
         const data = snapshot.data();
         if (data) {
+          const members = normalizeMembers(data);
+          console.info("[SyncSpace room snapshot]", { roomId, memberIds: members.map((member) => member.id) });
           callback({
             hostId: data.hostId,
             hostName: data.hostName,
-            members: normalizeMembers(data),
+            members,
             messages: normalizeMessages(data),
             mediaUrl: data.mediaUrl,
             mediaType: data.mediaType,
@@ -306,49 +331,249 @@ export function subscribeToRoomFirestore(
           });
         }
       },
-      () => {
-        // Silently handle permission/offline error
+      (error) => {
+        const firestoreError = error as Error & { code?: string };
+        console.error("[SyncSpace Firestore error]", {
+          roomId,
+          code: firestoreError.code || "unknown",
+          message: firestoreError.message,
+        });
+        onError?.();
       }
     );
   } catch {
+    console.error("[SyncSpace Firestore error]", {
+      roomId,
+      code: "unknown",
+      message: "Unable to create Firestore room listener",
+    });
+    onError?.();
     return () => {};
   }
 }
 
-export async function heartbeatMemberFirestore(roomId: string, userId: string, name: string, isHost: boolean) {
+export interface UserProfile {
+  uid: string;
+  name: string;
+  email: string;
+  photoURL?: string;
+}
+
+export function getOrCreateStableUser(): UserProfile {
+  if (typeof window === "undefined") {
+    return { uid: "ssr-user", name: "Guest", email: "guest@syncspace.app" };
+  }
+
+  const authenticatedUser = auth.currentUser;
+  if (authenticatedUser) {
+    const profile: UserProfile = {
+      uid: authenticatedUser.uid,
+      name: authenticatedUser.displayName || authenticatedUser.email?.split("@")[0] || "User",
+      email: authenticatedUser.email || "",
+      photoURL: authenticatedUser.photoURL || "",
+    };
+    localStorage.setItem("syncspace_current_user", JSON.stringify(profile));
+    return profile;
+  }
+
+  const saved = localStorage.getItem("syncspace_current_user");
+  if (saved) {
+    try {
+      const parsed = JSON.parse(saved);
+      if (parsed && (parsed.uid || parsed.email || parsed.name)) {
+        if (!parsed.uid) throw new Error("Guest profile needs a stable session identity");
+        const rawUid = String(parsed.uid).trim();
+        const uid = /^[A-Za-z0-9_-]+$/.test(rawUid)
+          ? rawUid
+          : rawUid.toLowerCase().replace(/[^a-z0-9_-]/g, "");
+        const name = parsed.name || "User";
+        const email = parsed.email || `${uid}@syncspace.app`;
+        const profile: UserProfile = { uid, name, email, photoURL: parsed.photoURL || "" };
+        localStorage.setItem("syncspace_current_user", JSON.stringify(profile));
+        return profile;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  let sessionUid = sessionStorage.getItem("syncspace_session_user_id");
+  if (!sessionUid) {
+    sessionUid = `guest_${typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
+    sessionStorage.setItem("syncspace_session_user_id", sessionUid);
+  }
+
+  let savedProfile: Record<string, unknown> = {};
+  try {
+    savedProfile = JSON.parse(localStorage.getItem("syncspace_current_user") || "{}");
+  } catch {
+    // ignore invalid saved profile
+  }
+  const guestName = typeof savedProfile.name === "string" && savedProfile.name
+    ? savedProfile.name
+    : `Guest ${sessionUid.slice(-4)}`;
+  const guestProfile: UserProfile = {
+    uid: sessionUid,
+    name: guestName,
+    email: typeof savedProfile.email === "string" && savedProfile.email
+      ? savedProfile.email
+      : `${sessionUid}@syncspace.app`,
+    photoURL: typeof savedProfile.photoURL === "string" ? savedProfile.photoURL : "",
+  };
+
+  localStorage.setItem("syncspace_current_user", JSON.stringify(guestProfile));
+  return guestProfile;
+}
+
+const lastHeartbeatTimeMap = new Map<string, number>();
+const heartbeatInFlightMap = new Map<string, Promise<boolean>>();
+const lastMaintenanceTimeMap = new Map<string, number>();
+const roomMaintenanceInFlightMap = new Map<string, Promise<void>>();
+const MEMBER_STALE_AFTER_MS = 180000;
+const ROOM_MAINTENANCE_INTERVAL_MS = 5 * 60 * 1000;
+
+export function heartbeatMemberFirestore(roomId: string, userId: string, name: string, isHost: boolean, previousUserId?: string | null): Promise<boolean> {
+  const memberId = userId || name.toLowerCase().trim().replace(/[^a-z0-9]/g, "");
+  const key = `${roomId}:${memberId}`;
+  const now = Date.now();
+  const lastTime = lastHeartbeatTimeMap.get(key) || 0;
+  if (!previousUserId && now - lastTime < 30000) return Promise.resolve(true);
+
+  const inFlight = heartbeatInFlightMap.get(key);
+  if (inFlight) return inFlight;
+
+  const operation = (async () => {
+    try {
+      const roomRef = doc(db, "rooms", roomId);
+      const member: FirestoreMemberPresence = { id: memberId, name, isHost, lastSeen: now };
+      console.info("[SyncSpace heartbeat]", {
+        url: typeof window === "undefined" ? "server" : window.location.href,
+        roomId,
+        userId: memberId,
+        name,
+      });
+
+      // Merge only this member's map entry. Independent users never replace
+      // the full membersById map or contend on a transaction read version.
+      await setDoc(roomRef, {
+        ...(isHost ? { hostId: memberId, hostName: name } : {}),
+        membersById: { [memberId]: member },
+      }, { merge: true });
+
+      lastHeartbeatTimeMap.set(key, now);
+      if (previousUserId && previousUserId !== memberId) {
+        await leaveMemberFirestore(roomId, previousUserId);
+      }
+      void cleanupRoomPresence(roomId, now).then(() => cleanupExpiredWebRTCSignals(roomId, now));
+      return true;
+    } catch (error) {
+      const firestoreError = error as Error & { code?: string };
+      console.warn("[SyncSpace heartbeat] write failed", {
+        roomId,
+        userId: memberId,
+        code: firestoreError.code || "unknown",
+        message: firestoreError.message,
+      });
+      return false;
+    } finally {
+      heartbeatInFlightMap.delete(key);
+    }
+  })();
+
+  heartbeatInFlightMap.set(key, operation);
+  return operation;
+}
+
+async function cleanupRoomPresence(roomId: string, now = Date.now()) {
+  const lastTime = lastMaintenanceTimeMap.get(roomId) || 0;
+  if (now - lastTime < ROOM_MAINTENANCE_INTERVAL_MS) return;
+  const inFlight = roomMaintenanceInFlightMap.get(roomId);
+  if (inFlight) return inFlight;
+
+  const operation = (async () => {
+    try {
+      const roomRef = doc(db, "rooms", roomId);
+      const snapshot = await getDoc(roomRef);
+      if (!snapshot.exists()) return;
+      const members = snapshot.data().membersById as Record<string, FirestoreMemberPresence> | undefined;
+      if (!members) return;
+
+      const staleIds = Object.entries(members)
+        .filter(([, member]) => now - Number(member.lastSeen || 0) > MEMBER_STALE_AFTER_MS)
+        .map(([memberId]) => memberId);
+      if (staleIds.length > 0) {
+        for (const memberId of staleIds) {
+          await updateDoc(roomRef, new FieldPath("membersById", memberId), deleteField());
+        }
+      }
+      lastMaintenanceTimeMap.set(roomId, now);
+    } catch (error) {
+      const firestoreError = error as Error & { code?: string };
+      console.warn("Firestore stale-member cleanup failed:", {
+        roomId,
+        code: firestoreError.code || "unknown",
+        message: firestoreError.message,
+      });
+    } finally {
+      roomMaintenanceInFlightMap.delete(roomId);
+    }
+  })();
+
+  roomMaintenanceInFlightMap.set(roomId, operation);
+  return operation;
+}
+
+const lastSignalCleanupTimeMap = new Map<string, number>();
+const signalCleanupInFlightMap = new Map<string, Promise<void>>();
+
+async function cleanupExpiredWebRTCSignals(roomId: string, now = Date.now()) {
+  const lastTime = lastSignalCleanupTimeMap.get(roomId) || 0;
+  if (now - lastTime < ROOM_MAINTENANCE_INTERVAL_MS) return;
+  const inFlight = signalCleanupInFlightMap.get(roomId);
+  if (inFlight) return inFlight;
+
+  const operation = (async () => {
   try {
     const roomRef = doc(db, "rooms", roomId);
-    const now = Date.now();
-    const memberId = userId || name.toLowerCase().trim().replace(/[^a-z0-9]/g, "");
-    const member = {
-      id: memberId,
-      name,
-      isHost,
-      lastSeen: now,
-    };
-
-    await setDoc(
-      roomRef,
-      {
-        ...(isHost ? { hostId: memberId, hostName: name } : {}),
-        membersById: {
-          [memberId]: member,
-        },
-        updatedAt: now,
-      },
-      { merge: true }
-    );
+    const snapshot = await getDoc(roomRef);
+    if (!snapshot.exists()) return;
+    const data = snapshot.data();
+    const signals = data.webrtcSignalsById && typeof data.webrtcSignalsById === "object"
+      ? data.webrtcSignalsById as Record<string, FirestoreWebRTCSignal>
+      : {};
+    const expiredSignalIds = Object.entries(signals)
+      .filter(([, signal]) => now - Number(signal.createdAt || 0) > 120000)
+      .map(([signalId]) => signalId);
+    if (expiredSignalIds.length > 0) {
+      for (const signalId of expiredSignalIds) {
+        await updateDoc(roomRef, new FieldPath("webrtcSignalsById", signalId), deleteField());
+      }
+    }
+    lastSignalCleanupTimeMap.set(roomId, now);
   } catch (error) {
-    console.error("Firestore member heartbeat failed", error);
+    const firestoreError = error as Error & { code?: string };
+    console.warn("Firestore WebRTC signal cleanup failed:", {
+      roomId,
+      code: firestoreError.code || "unknown",
+      message: firestoreError.message,
+    });
+  } finally {
+    signalCleanupInFlightMap.delete(roomId);
   }
+  })();
+  signalCleanupInFlightMap.set(roomId, operation);
+  return operation;
 }
+
+function firestoreSafeSignalKey(signalId: string) {
+  const bytes = new TextEncoder().encode(signalId);
+  return `signal_${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
+
 export async function leaveMemberFirestore(roomId: string, userId: string) {
   try {
     const roomRef = doc(db, "rooms", roomId);
-    await updateDoc(roomRef, {
-      [`membersById.${userId}`]: deleteField(),
-      updatedAt: Date.now(),
-    });
+    await updateDoc(roomRef, new FieldPath("membersById", userId), deleteField());
   } catch (error) {
     console.error("Firestore member leave failed", error);
   }
@@ -425,34 +650,286 @@ export async function updateRoomPlaybackFirestore(
   }
 }
 
+function encodeMqttLength(length: number): number[] {
+  const bytes: number[] = [];
+  let x = length;
+  do {
+    let encodedByte = x % 128;
+    x = Math.floor(x / 128);
+    if (x > 0) {
+      encodedByte |= 0x80;
+    }
+    bytes.push(encodedByte);
+  } while (x > 0);
+  return bytes;
+}
+
+export class MqttWebSocketRelay {
+  private ws: WebSocket | null = null;
+  private roomId: string;
+  private clientId: string;
+  private onMessageCallback: (payload: MqttRelayMessage) => void;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectTimer: ReturnType<typeof setTimeout> | null = null;
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private isClosed = false;
+  private mqttReady = false;
+  private packetId = 0;
+
+  constructor(roomId: string, clientId: string, onMessage: (payload: MqttRelayMessage) => void) {
+    this.roomId = roomId;
+    this.clientId = `${(clientId || "client").slice(-28)}_${Math.random().toString(36).slice(2, 8)}`;
+    this.onMessageCallback = onMessage;
+    this.connect();
+  }
+
+  public isConnected(): boolean {
+    return this.mqttReady && Boolean(this.ws && this.ws.readyState === WebSocket.OPEN);
+  }
+
+  private connect() {
+    if (this.isClosed || typeof window === "undefined") return;
+    try {
+      const url = "wss://broker.emqx.io:8084/mqtt";
+      const ws = new WebSocket(url, ["mqtt"]);
+      ws.binaryType = "arraybuffer";
+      this.ws = ws;
+      this.mqttReady = false;
+
+      ws.onopen = () => {
+        this.connectTimer = setTimeout(() => {
+          if (this.ws === ws && !this.mqttReady) ws.close();
+        }, 8000);
+        const clientIdBytes = new TextEncoder().encode(this.clientId);
+        const connHeader = new Uint8Array([
+          0x10,
+          ...encodeMqttLength(12 + clientIdBytes.length),
+          0x00, 0x04, 0x4d, 0x51, 0x54, 0x54, // "MQTT"
+          0x04, // MQTT 3.1.1
+          0x02, // Clean Session
+          0x00, 0x3c, // Keepalive 60s
+          (clientIdBytes.length >> 8) & 0xff, clientIdBytes.length & 0xff,
+          ...clientIdBytes
+        ]);
+        ws.send(connHeader);
+
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const buf = new Uint8Array(event.data as ArrayBuffer);
+          if (buf.length < 2) return;
+          const packetType = buf[0] & 0xf0;
+          let idx = 1;
+          let multiplier = 1;
+          let remainingLength = 0;
+          let digit = 0;
+          do {
+            digit = buf[idx++];
+            remainingLength += (digit & 0x7f) * multiplier;
+            multiplier *= 128;
+          } while ((digit & 0x80) !== 0 && idx < buf.length);
+          if (idx + remainingLength > buf.length) return;
+
+          if (packetType === 0x20) {
+            if (remainingLength < 2 || buf[idx + 1] !== 0) {
+              ws.close();
+              return;
+            }
+            const topicBytes = new TextEncoder().encode(`syncspace/room/${this.roomId}`);
+            const packetId = ++this.packetId;
+            ws.send(new Uint8Array([
+              0x82,
+              ...encodeMqttLength(5 + topicBytes.length),
+              (packetId >> 8) & 0xff, packetId & 0xff,
+              (topicBytes.length >> 8) & 0xff, topicBytes.length & 0xff,
+              ...topicBytes,
+              0x00,
+            ]));
+            return;
+          }
+
+          if (packetType === 0x90) {
+            if (remainingLength < 3 || buf.subarray(idx + 2, idx + remainingLength).some((code) => code === 0x80)) {
+              ws.close();
+              return;
+            }
+            this.mqttReady = true;
+            if (this.connectTimer) clearTimeout(this.connectTimer);
+            flushPendingGlobalSignals(this.roomId);
+            this.pingTimer = setInterval(() => {
+              if (this.mqttReady && this.ws === ws && ws.readyState === WebSocket.OPEN) ws.send(new Uint8Array([0xc0, 0x00]));
+            }, 30000);
+            return;
+          }
+
+          if (packetType === 0x30 && this.mqttReady) {
+            const topicLen = (buf[idx] << 8) | buf[idx + 1];
+            idx += 2 + topicLen;
+            const payloadBytes = buf.subarray(idx);
+            const text = new TextDecoder().decode(payloadBytes);
+            const json = JSON.parse(text) as MqttRelayMessage;
+
+            // Filter out self-published messages
+            if (json && json.senderClientId !== this.clientId) {
+              if (json.type === "WEBRTC_SIGNAL" && json.signal) {
+                notifyGlobalSignal(this.roomId, json.signal);
+              }
+              this.onMessageCallback(json);
+            }
+          }
+        } catch {
+          // ignore parse error
+        }
+      };
+
+      ws.onclose = () => {
+        this.mqttReady = false;
+        if (this.connectTimer) clearTimeout(this.connectTimer);
+        if (this.pingTimer) clearInterval(this.pingTimer);
+        if (!this.isClosed) {
+          this.reconnectTimer = setTimeout(() => this.connect(), 2000);
+        }
+      };
+
+      ws.onerror = () => {
+        try { ws.close(); } catch {}
+      };
+    } catch {
+      // ignore
+    }
+  }
+
+  public publish(payload: Record<string, unknown>): boolean {
+    if (!this.isConnected() || !this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    try {
+      const fullPayload = { ...payload, senderClientId: this.clientId };
+      const topicBytes = new TextEncoder().encode(`syncspace/room/${this.roomId}`);
+      const payloadBytes = new TextEncoder().encode(JSON.stringify(fullPayload));
+      const remLen = 2 + topicBytes.length + payloadBytes.length;
+
+      const packet = new Uint8Array([
+        0x30,
+        ...encodeMqttLength(remLen),
+        (topicBytes.length >> 8) & 0xff, topicBytes.length & 0xff,
+        ...topicBytes,
+        ...payloadBytes
+      ]);
+      this.ws.send(packet);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  public close() {
+    this.isClosed = true;
+    this.mqttReady = false;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.connectTimer) clearTimeout(this.connectTimer);
+    if (this.pingTimer) clearInterval(this.pingTimer);
+    if (this.ws) {
+      try { this.ws.close(); } catch {}
+    }
+  }
+}
+
+export const activeGlobalRelays = new Map<string, MqttWebSocketRelay>();
+const pendingGlobalSignals = new Map<string, FirestoreWebRTCSignal[]>();
+
+function flushPendingGlobalSignals(roomId: string) {
+  const relay = activeGlobalRelays.get(roomId);
+  const queued = pendingGlobalSignals.get(roomId);
+  if (!relay?.isConnected() || !queued?.length) return;
+
+  const now = Date.now();
+  const pending = queued.filter((signal) => now - signal.createdAt <= 60000);
+  while (pending.length > 0 && relay.publish({ type: "WEBRTC_SIGNAL", signal: pending[0] })) {
+    pending.shift();
+  }
+
+  if (pending.length > 0) pendingGlobalSignals.set(roomId, pending);
+  else pendingGlobalSignals.delete(roomId);
+}
+
+type GlobalSignalCallback = (signal: FirestoreWebRTCSignal) => void;
+const globalSignalListeners = new Map<string, Set<GlobalSignalCallback>>();
+
+export function subscribeToGlobalSignals(roomId: string, callback: GlobalSignalCallback) {
+  if (!globalSignalListeners.has(roomId)) {
+    globalSignalListeners.set(roomId, new Set());
+  }
+  globalSignalListeners.get(roomId)!.add(callback);
+
+  return () => {
+    const listeners = globalSignalListeners.get(roomId);
+    if (listeners) {
+      listeners.delete(callback);
+      if (listeners.size === 0) globalSignalListeners.delete(roomId);
+    }
+  };
+}
+
+export function notifyGlobalSignal(roomId: string, signal: FirestoreWebRTCSignal) {
+  const listeners = globalSignalListeners.get(roomId);
+  if (listeners) {
+    listeners.forEach((cb) => cb(signal));
+  }
+}
+
 export async function sendWebRTCSignalFirestore(
   roomId: string,
   signal: Omit<FirestoreWebRTCSignal, "id" | "createdAt"> & { id?: string; createdAt?: number }
 ) {
-  try {
-    const now = signal.createdAt || Date.now();
-    const signalId = signal.id || `rtc-${signal.from}-${signal.to}-${now}-${Math.random().toString(36).slice(2, 8)}`;
-    const roomRef = doc(db, "rooms", roomId);
+  const now = signal.createdAt || Date.now();
+  const signalId = signal.id || `rtc-${signal.from}-${signal.to}-${now}-${Math.random().toString(36).slice(2, 8)}`;
+  const fullSignal: FirestoreWebRTCSignal = {
+    id: signalId,
+    from: signal.from,
+    to: signal.to,
+    type: signal.type,
+    payload: signal.payload,
+    createdAt: now,
+  };
 
-    await setDoc(
-      roomRef,
-      {
-        webrtcSignalsById: {
-          [signalId]: {
-            id: signalId,
-            from: signal.from,
-            to: signal.to,
-            type: signal.type,
-            payload: signal.payload,
-            createdAt: now,
+  // 1. Broadcast via local browser channel for zero-latency same-browser tabs
+  if (typeof window !== "undefined" && "BroadcastChannel" in window) {
+    try {
+      const channel = new BroadcastChannel(`syncspace_webrtc_signals_${roomId}`);
+      channel.postMessage({ type: "WEBRTC_SIGNAL", signal: fullSignal });
+      channel.close();
+    } catch {
+      // ignore
+    }
+  }
+
+  // 2. Broadcast via global MQTT WebSocket relay across devices/computers
+  const activeRelay = activeGlobalRelays.get(roomId);
+  let relaySent = false;
+  if (activeRelay) {
+    relaySent = activeRelay.publish({ type: "WEBRTC_SIGNAL", signal: fullSignal });
+  }
+
+  // Persist only when a ready relay could not accept the message.
+  if (!relaySent) {
+    const queued = pendingGlobalSignals.get(roomId) || [];
+    queued.push(fullSignal);
+    pendingGlobalSignals.set(roomId, queued.slice(-100));
+    try {
+      const roomRef = doc(db, "rooms", roomId);
+      await setDoc(
+        roomRef,
+        {
+          webrtcSignalsById: {
+          [firestoreSafeSignalKey(signalId)]: fullSignal,
           },
+          updatedAt: now,
         },
-        updatedAt: now,
-      },
-      { merge: true }
-    );
-  } catch (error) {
-    console.error("Firestore WebRTC signal send failed", error);
+        { merge: true }
+      );
+    } catch (error) {
+      console.warn("Firestore WebRTC signal fallback active (Quota limit or network delay):", error);
+    }
   }
 }
 export { app, auth, db, googleProvider, analytics, signOut };

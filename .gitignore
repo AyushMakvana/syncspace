@@ -1,7 +1,8 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+﻿# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
 # dependencies
 /node_modules
+node_modules/
 /.pnp
 .pnp.*
 .yarn/*
@@ -15,6 +16,7 @@
 
 # next.js
 /.next/
+.next/
 /out/
 
 # production
@@ -24,14 +26,18 @@
 .DS_Store
 *.pem
 
-# debug
+# debug & logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+*.log
 
-# env files (can opt-in for committing if needed)
-.env*
+# env files (strict exclusion of secrets)
+.env
+.env.local
+.env.*
+!.env.example
 
 # vercel
 .vercel
@@ -44,3 +50,19 @@ next-env.d.ts
 public/videos/
 *.mp4
 
+# additional generated output
+/dist/
+/.cache/
+
+# Firebase service account credentials
+*service-account*.json
+*service_account*.json
+*-firebase-adminsdk-*.json
+
+# private certificates and keys
+*.p12
+*.pfx
+*.key
+
+# local editor settings may contain credentials
+.vscode/settings.json

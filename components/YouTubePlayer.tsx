@@ -17,6 +17,9 @@ interface YTPlayerInstance {
   playVideo: () => void;
   pauseVideo: () => void;
   mute: () => void;
+  unMute: () => void;
+  setVolume: (volume: number) => void;
+  isMuted: () => boolean;
   getPlayerState: () => number;
 }
 
@@ -62,13 +65,15 @@ export default function YouTubePlayer({ videoId, onStateSync, syncState, clientI
   }, []);
 
   const playSyncedVideo = useCallback((player: YTPlayerInstance, targetTime: number) => {
+    if (typeof player.unMute === "function") player.unMute();
+    if (typeof player.setVolume === "function") player.setVolume(100);
     player.playVideo();
     clearAutoplayRetry();
 
     autoplayRetryTimeoutRef.current = window.setTimeout(() => {
-      if (playerRef.current !== player || player.getPlayerState() === 1) return;
-
-      player.mute();
+      if (playerRef.current !== player) return;
+      if (typeof player.unMute === "function") player.unMute();
+      if (typeof player.setVolume === "function") player.setVolume(100);
       player.seekTo(targetTime, true);
       player.playVideo();
     }, 350);

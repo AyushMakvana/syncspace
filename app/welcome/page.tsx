@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -18,31 +18,28 @@ import {
 
 import { LiquidGlassCard } from "@/components/ui/liquid-weather-glass";
 import { LiquidButton } from "@/components/ui/liquid-glass-button";
-import { signInWithGooglePopup, signInWithEmail, signUpWithEmail, resolveRoomCode } from "@/lib/firebase";
+import { signInWithGooglePopup, signInWithEmail, signUpWithEmail, resolveRoomCode, getOrCreateStableUser, signOutUser } from "@/lib/firebase";
 
 type ModalState = "none" | "create-room" | "join-room" | "login" | "signup";
+type LocalUserProfile = { name: string; email: string; uid?: string; photoURL?: string };
+
+function readSavedUserProfile(): LocalUserProfile | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const parsed = JSON.parse(localStorage.getItem("syncspace_current_user") || "null");
+    return parsed && typeof parsed.name === "string" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
 
 export default function WelcomePage() {
   const router = useRouter();
   const [activeModal, setActiveModal] = useState<ModalState>("none");
 
-  // Temporary Login / User Profile State
-  const [userProfile, setUserProfile] = useState<{
-    name: string;
-    email: string;
-  } | null>(() => {
-    if (typeof window === "undefined") return null;
-    const savedUser = localStorage.getItem("syncspace_current_user");
-    if (savedUser) {
-      try {
-        return JSON.parse(savedUser);
-      } catch {
-        return null;
-      }
-    }
-    return null;
-  });
-  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => userProfile !== null);
+  const isMounted = useSyncExternalStore(() => () => {}, () => true, () => false);
+  const [userProfile, setUserProfile] = useState<LocalUserProfile | null>(readSavedUserProfile);
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => Boolean(readSavedUserProfile()));
   const [showProfileMenu, setShowProfileMenu] = useState(false);
 
   // Form states
@@ -62,15 +59,25 @@ export default function WelcomePage() {
   const closeModal = () => setActiveModal("none");
 
   // Helper to create and enter user room
-  const enterRoom = (userName?: string) => {
-    const rawName = userName || userProfile?.name || loginIdentifier.split("@")[0] || "ayushmakvan";
+  const enterRoom = (profile?: { name: string; email: string; uid?: string; photoURL?: string }) => {
+    const rawName = profile?.name || userProfile?.name || loginIdentifier.split("@")[0] || "ayushmakvan";
     const slug = rawName.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const stableProfile = profile?.uid
+      ? profile
+      : userProfile?.uid
+        ? userProfile
+        : getOrCreateStableUser();
     // Generate fresh room ID for new room creation to guarantee clean chat
     const randomId = Math.floor(1000 + Math.random() * 9000);
     const roomSlug = `${slug || "ayushmakvan"}-${randomId}-room`;
 
     if (typeof window !== "undefined") {
-      localStorage.setItem("syncspace_current_user", JSON.stringify({ name: rawName, email: userProfile?.email || `${slug}@syncspace.app` }));
+      localStorage.setItem("syncspace_current_user", JSON.stringify({
+        name: rawName,
+        email: profile?.email || userProfile?.email || stableProfile.email || `${slug}@syncspace.app`,
+        uid: stableProfile.uid,
+        ...(profile?.photoURL || userProfile?.photoURL ? { photoURL: profile?.photoURL || userProfile?.photoURL } : {}),
+      }));
       localStorage.setItem(`syncspace_host_${roomSlug}`, rawName);
       // Ensure new room starts with fresh chat history
       localStorage.removeItem(`syncspace_chat_messages_${roomSlug}`);
@@ -97,7 +104,7 @@ export default function WelcomePage() {
       setUserProfile(user);
       setIsLoggedIn(true);
       closeModal();
-      enterRoom(user.name);
+      enterRoom(user);
     } else if (error) {
       // If user doesn't exist yet, auto create / sign up with provided credentials
       const fallbackName = loginIdentifier.split("@")[0];
@@ -106,7 +113,7 @@ export default function WelcomePage() {
         setUserProfile(newUser);
         setIsLoggedIn(true);
         closeModal();
-        enterRoom(newUser.name);
+        enterRoom(newUser);
       } else {
         alert(signUpErr || "Authentication error. Please check your credentials.");
       }
@@ -126,7 +133,7 @@ export default function WelcomePage() {
       setUserProfile(user);
       setIsLoggedIn(true);
       closeModal();
-      enterRoom(user.name);
+      enterRoom(user);
     } else if (error) {
       alert(error || "Sign up error. Please check your credentials.");
     }
@@ -141,20 +148,18 @@ export default function WelcomePage() {
       setUserProfile(user);
       setIsLoggedIn(true);
       closeModal();
-      enterRoom(user.name);
+      enterRoom(user);
     } else if (error && !error.includes("popup-closed-by-user")) {
       console.warn("Firebase Google Auth warning:", error);
     }
   };
 
   // Log out function
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await signOutUser();
     setIsLoggedIn(false);
     setUserProfile(null);
     setShowProfileMenu(false);
-    if (typeof window !== "undefined") {
-      localStorage.removeItem("syncspace_current_user");
-    }
   };
 
   // Join Room Submit Handler (Resolves Code or URL directly across any browser)
@@ -171,10 +176,13 @@ export default function WelcomePage() {
       return;
     }
 
-    const targetRoom = await resolveRoomCode(rawInput);
-
-    closeModal();
-    router.push(`/room/${targetRoom}`);
+    try {
+      const targetRoom = await resolveRoomCode(rawInput);
+      closeModal();
+      router.push(`/room/${encodeURIComponent(targetRoom)}`);
+    } catch {
+      alert("Room code was not found. Ask the host for a current invitation link or code.");
+    }
   };
 
   return (
@@ -203,7 +211,7 @@ export default function WelcomePage() {
             </Link>
 
             {/* Auth Buttons vs Logged-In Profile Avatar */}
-            {!isLoggedIn ? (
+            {!(isMounted && isLoggedIn) ? (
               <div className="flex items-center gap-3">
                 <LiquidButton
                   onClick={() => setActiveModal("login")}

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import {
@@ -46,6 +46,11 @@ import {
   sendChatMessageFirestore,
   updateRoomMediaFirestore,
   updateRoomPlaybackFirestore,
+  MqttWebSocketRelay,
+  activeGlobalRelays,
+  getOrCreateStableUser,
+  FirestoreWebRTCSignal,
+  signOutUser,
 } from "@/lib/firebase";
 
 interface ChatMessage {
@@ -69,6 +74,7 @@ export default function RoomPage() {
   const router = useRouter();
   const params = useParams();
   const roomId = (params?.roomId as string) || "ayushmakvan-room";
+  const isMounted = useSyncExternalStore(() => () => {}, () => true, () => false);
 
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
@@ -88,49 +94,40 @@ export default function RoomPage() {
   const rawHost = roomId.replace("-room", "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
   const hostName = rawHost ? rawHost.charAt(0).toUpperCase() + rawHost.slice(1) : "Ayush";
 
-  const [currentUser, setCurrentUser] = useState<{ name: string; email: string; uid?: string; photoURL?: string }>(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("syncspace_current_user");
-      if (saved) {
-        try {
-          const parsed = JSON.parse(saved);
-          if (parsed.name) return parsed;
-        } catch {
-          // ignore
-        }
-      }
-    }
-    return { name: "", email: "" };
+  const [authReady, setAuthReady] = useState(false);
+
+  const [currentUser, setCurrentUser] = useState<{ name: string; email: string; uid?: string; photoURL?: string }>({
+    name: "",
+    email: "",
   });
+  const identityMigrationRef = useRef<string | null>(null);
+  const isLoggingOutRef = useRef(false);
 
   useEffect(() => {
-    if (typeof window !== "undefined" && !currentUser.name) {
-      const saved = localStorage.getItem("syncspace_current_user");
-      if (!saved) {
-        setTimeout(() => setShowAuthModal(true), 0);
-      }
-    }
-
+    let active = true;
     const unsubscribe = subscribeToAuth((userProfile) => {
-      if (userProfile && userProfile.email) {
-        setCurrentUser(userProfile);
-        setShowAuthModal(false);
+      if (!active || isLoggingOutRef.current) return;
+      if (userProfile?.uid) {
+        setCurrentUser((previous) => {
+          if (previous.uid && previous.uid !== userProfile.uid) identityMigrationRef.current = previous.uid;
+          return userProfile;
+        });
+      } else {
+        setCurrentUser(getOrCreateStableUser());
       }
+      setAuthReady(true);
     });
-    return () => unsubscribe();
-  }, [currentUser.name]);
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
 
   const hostStorageKey = `syncspace_host_${roomId}`;
-  const [members, setMembers] = useState<RoomMember[]>(() => {
-    return [
-      {
-        id: `initial-host-${hostName}`,
-        name: hostName || "Ayush",
-        isHost: true,
-        online: true,
-      },
-    ];
-  });
+  const [members, setMembers] = useState<RoomMember[]>([]);
+  const [roomSnapshotAvailable, setRoomSnapshotAvailable] = useState(false);
+  const visibleMembers = roomSnapshotAvailable ? members : [];
+  const [firestoreSignals, setFirestoreSignals] = useState<FirestoreWebRTCSignal[]>([]);
 
   // Unique Room Code (Includes Host Slug for Global Resolution across Browsers)
   const uniqueCode = `${rawHost.toUpperCase()}-${Math.abs(
@@ -159,24 +156,36 @@ export default function RoomPage() {
     updatedBy?: string;
   } | null>(null);
   const lastPlaybackTimestampRef = useRef(0);
+  const lastPlaybackPersistRef = useRef({ state: -1, currentTime: 0, at: 0 });
+
+  const getActiveUserId = useCallback(() => {
+    const uid = currentUser.uid || getOrCreateStableUser().uid;
+    return uid.trim();
+  }, [currentUser.uid]);
 
   const handleYouTubeStateSync = useCallback((state: number, currentTime: number) => {
-    const activeUserId = (currentUser.uid || currentUser.email || currentUser.name || "")
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9]/g, "");
+    const activeUserId = getActiveUserId();
     if (!activeUserId) return;
 
     const timestamp = Date.now();
     lastPlaybackTimestampRef.current = timestamp;
     setYoutubeSyncState({ state, currentTime, timestamp, updatedBy: activeUserId });
 
-    updateRoomPlaybackFirestore(roomId, {
-      state,
-      currentTime,
-      updatedBy: activeUserId,
-      updatedAt: timestamp,
-    });
+    const previous = lastPlaybackPersistRef.current;
+    const expectedTime = previous.state === 1
+      ? previous.currentTime + Math.max(0, timestamp - previous.at) / 1000
+      : previous.currentTime;
+    const shouldPersist = previous.state === -1 || state !== previous.state ||
+      Math.abs(currentTime - expectedTime) > 2 || timestamp - previous.at >= 30000;
+    if (shouldPersist) {
+      lastPlaybackPersistRef.current = { state, currentTime, at: timestamp };
+      updateRoomPlaybackFirestore(roomId, {
+        state,
+        currentTime,
+        updatedBy: activeUserId,
+        updatedAt: timestamp,
+      });
+    }
 
     if (channelRef.current) {
       channelRef.current.postMessage({
@@ -187,7 +196,7 @@ export default function RoomPage() {
         updatedBy: activeUserId,
       });
     }
-  }, [currentUser.email, currentUser.name, currentUser.uid, roomId]);
+  }, [getActiveUserId, roomId]);
 
   // Chat State
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -195,35 +204,18 @@ export default function RoomPage() {
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const channelRef = useRef<BroadcastChannel | null>(null);
-
-
+  const mqttRelayRef = useRef<MqttWebSocketRelay | null>(null);
 
   const userInitial = React.useMemo(() => {
+    if (!isMounted) return hostName ? hostName.charAt(0).toUpperCase() : "A";
     if (currentUser.name && currentUser.name.trim()) {
       return currentUser.name.trim().charAt(0).toUpperCase();
     }
-    if (typeof window !== "undefined") {
-      try {
-        const saved = localStorage.getItem("syncspace_current_user");
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (parsed.name && parsed.name.trim()) {
-            return parsed.name.trim().charAt(0).toUpperCase();
-          }
-        }
-      } catch {
-        // ignore
-      }
-    }
     return hostName ? hostName.charAt(0).toUpperCase() : "A";
-  }, [currentUser.name, hostName]);
+  }, [isMounted, currentUser.name, hostName]);
 
-  const getActiveUserId = useCallback(() => {
-    const savedId = currentUser.uid || currentUser.email || currentUser.name || "";
-    return savedId.toLowerCase().trim().replace(/[^a-z0-9]/g, "");
-  }, [currentUser.email, currentUser.name, currentUser.uid]);
   // Explicit Leave Room Handler
-  const handleLeaveRoom = () => {
+  const handleLeaveRoom = async () => {
     const activeUserId = getActiveUserId();
 
     if (typeof window !== "undefined" && activeUserId) {
@@ -237,24 +229,73 @@ export default function RoomPage() {
         // ignore
       }
 
-      leaveMemberFirestore(roomId, activeUserId);
+      if (mqttRelayRef.current) {
+        mqttRelayRef.current.publish({ type: "USER_LEFT", user: activeUserId });
+      }
+
+      await leaveMemberFirestore(roomId, activeUserId);
     }
 
     setShowSettingsMenu(false);
     setShowProfileMenu(false);
     router.push("/welcome");
   };
-  // Real-time Room Members & Live Chat Synchronization (Hybrid Engine: Local + BroadcastChannel + Firestore)
+
+  // Upsert helper to deduplicate room members by stable member ID
+  const upsertMembers = useCallback((incomingMembers: { id: string; name: string; isHost: boolean; lastSeen?: number }[], replace = false) => {
+    const now = Date.now();
+    setMembers((prev) => {
+      const memberMap = new Map<string, RoomMember>(replace ? [] : prev.map((member) => [member.id, member]));
+
+      for (const inc of incomingMembers) {
+        const incId = inc.id || inc.name.toLowerCase().trim().replace(/[^a-z0-9_-]/g, "");
+        if (!incId) continue;
+
+        if (inc.lastSeen && now - inc.lastSeen > 180000) {
+          memberMap.delete(incId);
+          continue;
+        }
+
+        memberMap.set(incId, {
+          id: incId,
+          name: inc.name || "Member",
+          isHost: Boolean(inc.isHost),
+          online: true,
+        });
+      }
+
+      const sorted = Array.from(memberMap.values()).sort((a, b) => {
+        if (a.isHost && !b.isHost) return -1;
+        if (!a.isHost && b.isHost) return 1;
+        return a.name.localeCompare(b.name);
+      });
+
+      if (
+        prev.length === sorted.length &&
+        prev.every((p, idx) => p.id === sorted[idx]?.id && p.name === sorted[idx]?.name && p.isHost === sorted[idx]?.isHost)
+      ) {
+        return prev;
+      }
+
+      return sorted;
+    });
+  }, [setMembers]);
+
+  // Real-time Room Members & Live Chat Synchronization (Hybrid Engine: Local + BroadcastChannel + WebSocket Relay + Firestore)
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined" || !authReady || !currentUser.uid) return;
 
     const chatKey = `syncspace_chat_messages_${roomId}`;
+    const activeUserId = currentUser.uid.trim();
+    const activeName = currentUser.name || getOrCreateStableUser().name;
+    const savedHostForRoom = localStorage.getItem(hostStorageKey) || "";
+    const isRoomHost = savedHostForRoom.toLowerCase().trim() === activeName.toLowerCase().trim();
 
     // Register room code globally
-    registerRoomCode(uniqueCode, roomId);
-    registerRoomCode(rawHost, roomId);
-    if (currentUser.name) {
-      registerRoomCode(currentUser.name, roomId);
+    if (isRoomHost) {
+      registerRoomCode(uniqueCode, roomId);
+      registerRoomCode(rawHost, roomId);
+      if (activeName) registerRoomCode(activeName, roomId);
     }
     localStorage.setItem(`syncspace_code_${uniqueCode}`, roomId);
     localStorage.setItem(`syncspace_code_${rawHost.toUpperCase()}`, roomId);
@@ -265,7 +306,6 @@ export default function RoomPage() {
         const rawChat = localStorage.getItem(chatKey);
         if (rawChat) {
           const chatList: { id: string; sender: string; text: string; time: string }[] = JSON.parse(rawChat);
-          const activeName = currentUser.name || "";
           const formattedMsgs = chatList.map((msg) => ({
             ...msg,
             isSelf: msg.sender.toLowerCase().trim() === activeName.toLowerCase().trim(),
@@ -280,69 +320,100 @@ export default function RoomPage() {
       }
     };
 
+    // MqttWebSocketRelay setup for instant cross-device member presence, chat, & media sync
+    let mqttRelay: MqttWebSocketRelay | null = null;
+    try {
+      mqttRelay = new MqttWebSocketRelay(roomId, activeUserId, (data) => {
+        if (!data || typeof data !== "object") return;
+        const { type, member, user: remoteUser, text, mediaUrl, state, currentTime, timestamp, updatedBy } = data;
+
+        if (type === "USER_PRESENCE" && member && member.id && member.name) {
+          upsertMembers([{
+            id: member.id,
+            name: member.name,
+            isHost: Boolean(member.isHost),
+            lastSeen: member.lastSeen || Date.now(),
+          }]);
+        } else if (type === "USER_LEFT" && remoteUser) {
+          setMembers((prev) => prev.filter((m) => m.id !== remoteUser && m.name.toLowerCase().trim() !== String(remoteUser).toLowerCase().trim()));
+        } else if (type === "CHAT_MESSAGE" && text) {
+          const msgId = data.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          const msgTime = data.time || new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+          const newMsg: ChatMessage = {
+            id: msgId,
+            sender: remoteUser || "Member",
+            text,
+            time: msgTime,
+            isSelf: (remoteUser || "").toLowerCase().trim() === activeName.toLowerCase().trim(),
+          };
+          setMessages((prev) => {
+            if (prev.some((p) => p.id === newMsg.id || (p.text === text && p.sender === remoteUser))) return prev;
+            return [...prev, newMsg].slice(-80);
+          });
+        } else if (type === "MEDIA_SELECTED" && mediaUrl) {
+          setSelectedMediaUrl(mediaUrl);
+        } else if (type === "MEDIA_SYNC" && typeof state === "number" && typeof currentTime === "number" && typeof timestamp === "number") {
+          if (timestamp > lastPlaybackTimestampRef.current) {
+            lastPlaybackTimestampRef.current = timestamp;
+            setYoutubeSyncState({ state, currentTime, timestamp, updatedBy });
+          }
+        }
+      });
+      mqttRelayRef.current = mqttRelay;
+      activeGlobalRelays.set(roomId, mqttRelay);
+    } catch {
+      // ignore
+    }
+
     const syncRoomMembers = () => {
-      const activeName = currentUser.name?.trim();
-      const activeUserId = getActiveUserId();
-      if (!activeName || !activeUserId) return;
+      const currentUserId = activeUserId;
+      const currentName = activeName;
+      const isHost = isRoomHost;
 
-      const normActive = activeName.toLowerCase();
-      const savedHost = localStorage.getItem(hostStorageKey) || "";
-      const isHost = savedHost.toLowerCase().trim() === normActive;
+      // Upsert self into local member list
+      upsertMembers([{
+        id: currentUserId,
+        name: currentName,
+        isHost,
+        lastSeen: Date.now(),
+      }]);
 
-      // Firestore is the shared presence source. Avoid setting `members` from
-      // localStorage here, because each browser only knows about itself and that
-      // makes the avatar row flicker between local and remote snapshots.
-      heartbeatMemberFirestore(roomId, activeUserId, activeName, isHost);
+      if (mqttRelayRef.current) {
+        mqttRelayRef.current.publish({
+          type: "USER_PRESENCE",
+          member: { id: currentUserId, name: currentName, isHost, online: true, lastSeen: Date.now() },
+        });
+      }
+
+      const previousId = identityMigrationRef.current;
+      void heartbeatMemberFirestore(roomId, currentUserId, currentName, isHost, previousId).then((succeeded) => {
+        if (succeeded && identityMigrationRef.current === previousId) identityMigrationRef.current = null;
+      });
     };
+
     // Immediate initial sync
     syncRoomMembers();
     syncChatMessages();
 
-    // Fast 1.5s ticker
-    const intervalId = setInterval(syncRoomMembers, 1500);
+    // 15s heartbeat ticker (Optimized for zero Firestore quota issues)
+    const intervalId = setInterval(syncRoomMembers, 15000);
 
     // Subscribe to Firestore Realtime Room updates
     const unsubscribeFirestore = subscribeToRoomFirestore(roomId, (data) => {
+      setRoomSnapshotAvailable(true);
       if (data.members && Array.isArray(data.members)) {
-        const now = Date.now();
         const activeHostId = data.hostId || "";
-        const activeMembers = data.members.filter((m) => now - m.lastSeen < 8000);
-        if (activeMembers.length > 0) {
-          const seen = new Set<string>();
-          const dedup: RoomMember[] = [];
-          for (const m of activeMembers) {
-            const key = m.name.toLowerCase().trim();
-            if (!seen.has(key)) {
-              seen.add(key);
-              dedup.push({
-                id: m.id || `member-${m.name.toLowerCase().trim().replace(/[^a-zA-Z0-9]/g, "")}`,
-                name: m.name,
-                isHost: activeHostId ? m.id === activeHostId : Boolean(m.isHost),
-                online: true,
-              });
-            }
-          }
-          const sorted = dedup.sort((a, b) => {
-            if (a.isHost && !b.isHost) return -1;
-            if (!a.isHost && b.isHost) return 1;
-            return a.name.localeCompare(b.name);
-          });
-          if (sorted.length > 0) {
-            setMembers((prev) => {
-              if (
-                prev.length === sorted.length &&
-                prev.every((p, idx) => p.id === sorted[idx]?.id && p.name === sorted[idx]?.name && p.isHost === sorted[idx]?.isHost)
-              ) {
-                return prev;
-              }
-              return sorted;
-            });
-          }
-        }
+        const firestoreList = data.members.map((m) => ({
+          id: m.id || m.name.toLowerCase().trim().replace(/[^a-z0-9_-]/g, ""),
+          name: m.name,
+          isHost: activeHostId ? m.id === activeHostId : Boolean(m.isHost),
+          lastSeen: m.lastSeen || Date.now(),
+        }));
+        upsertMembers(firestoreList, true);
       }
+      setFirestoreSignals(data.webrtcSignals || []);
 
       if (data.messages && Array.isArray(data.messages)) {
-        const activeName = currentUser.name || "";
         const formattedMsgs = data.messages.map((msg) => ({
           ...msg,
           isSelf: msg.sender.toLowerCase().trim() === activeName.toLowerCase().trim(),
@@ -377,11 +448,15 @@ export default function RoomPage() {
           updatedBy: data.playback.updatedBy,
         });
       }
+    }, () => {
+      setRoomSnapshotAvailable(false);
     });
 
     const handleUnload = () => {
-      const activeUserId = getActiveUserId();
       if (!activeUserId) return;
+      if (mqttRelayRef.current) {
+        mqttRelayRef.current.publish({ type: "USER_LEFT", user: activeUserId });
+      }
       leaveMemberFirestore(roomId, activeUserId);
     };
     window.addEventListener("beforeunload", handleUnload);
@@ -423,6 +498,10 @@ export default function RoomPage() {
         window.removeEventListener("pagehide", handleUnload);
         window.removeEventListener("storage", handleStorage);
         channel.close();
+        if (mqttRelay) {
+          mqttRelay.close();
+          activeGlobalRelays.delete(roomId);
+        }
       };
     } catch {
       return () => {
@@ -431,9 +510,13 @@ export default function RoomPage() {
         window.removeEventListener("beforeunload", handleUnload);
         window.removeEventListener("pagehide", handleUnload);
         window.removeEventListener("storage", handleStorage);
+        if (mqttRelay) {
+          mqttRelay.close();
+          activeGlobalRelays.delete(roomId);
+        }
       };
     }
-  }, [roomId, rawHost, uniqueCode, currentUser.name, hostName, hostStorageKey, getActiveUserId]);
+  }, [roomId, rawHost, uniqueCode, hostStorageKey, upsertMembers, getActiveUserId, authReady, currentUser.uid, currentUser.name]);
 
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -441,7 +524,9 @@ export default function RoomPage() {
 
   // Copy Link handler
   const handleCopyLink = () => {
-    const fullUrl = typeof window !== "undefined" ? window.location.href : `https://syncspace.app/room/${roomId}`;
+    const fullUrl = typeof window !== "undefined"
+      ? `${window.location.origin}/room/${encodeURIComponent(roomId)}`
+      : `https://syncspace.app/room/${encodeURIComponent(roomId)}`;
     navigator.clipboard.writeText(fullUrl);
     setCopiedLink(true);
     setTimeout(() => setCopiedLink(false), 2000);
@@ -579,7 +664,7 @@ export default function RoomPage() {
                 className="hidden h-9 items-center gap-2 rounded-xl border border-white/15 bg-white/8 px-3 text-xs font-bold text-white/85 transition hover:bg-white/15 sm:inline-flex"
               >
                 <Users className="size-4 text-yellow-200" />
-                <span>{members.length} {members.length === 1 ? "member" : "members"}</span>
+                <span suppressHydrationWarning>{visibleMembers.length} {visibleMembers.length === 1 ? "member" : "members"}</span>
               </button>
 
               {showMembersMenu && (
@@ -595,7 +680,7 @@ export default function RoomPage() {
                     onClick={(e) => e.stopPropagation()}
                     className="absolute right-0 top-11 z-[999] w-56 overflow-hidden rounded-2xl border border-white/20 bg-[#12051f]/95 p-2 text-white shadow-[0_12px_40px_rgba(0,0,0,0.8)] backdrop-blur-2xl animate-in fade-in zoom-in-95 duration-150"
                   >
-                    {[...members]
+                    {[...visibleMembers]
                       .sort((a, b) => {
                         if (a.isHost && !b.isHost) return -1;
                         if (!a.isHost && b.isHost) return 1;
@@ -792,12 +877,11 @@ export default function RoomPage() {
 
                       <button
                         type="button"
-                        onClick={() => {
-                          if (typeof window !== "undefined") {
-                            localStorage.removeItem("syncspace_current_user");
-                          }
+                        onClick={async () => {
+                          isLoggingOutRef.current = true;
+                          await signOutUser();
                           setShowProfileMenu(false);
-                          router.push("/welcome");
+                          await handleLeaveRoom();
                         }}
                         className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-xs font-bold text-white/90 transition hover:bg-red-500/25 hover:text-red-300"
                       >
@@ -916,6 +1000,7 @@ export default function RoomPage() {
                   roomId={roomId}
                   currentUser={currentUser}
                   members={members}
+                  firestoreSignals={firestoreSignals}
                 />
               </div>
             ) : (
