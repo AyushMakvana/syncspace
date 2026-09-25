@@ -85,7 +85,7 @@ export default function RoomPage() {
   const [authName, setAuthName] = useState<string>("");
 
   // Derive Host Name deterministically
-  const rawHost = roomId.replace("-room", "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+  const rawHost = roomId.replace("-room", "").split("-")[0].replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
   const hostName = rawHost ? rawHost.charAt(0).toUpperCase() + rawHost.slice(1) : "Ayush";
 
   const [currentUser, setCurrentUser] = useState<{ name: string; email: string; uid?: string; photoURL?: string }>(() => {

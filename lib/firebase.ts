@@ -177,8 +177,8 @@ export async function resolveRoomCode(input: string): Promise<string> {
 
   // If input contains hyphen e.g. AYUSHMAKVANA-2779
   if (cleanInput.includes("-")) {
-    const prefix = cleanInput.split("-")[0].toLowerCase().replace(/[^a-zA-Z0-9]/g, "");
-    if (prefix) return `${prefix}-room`;
+    const prefix = cleanInput.toLowerCase().replace(/[^a-zA-Z0-9-]/g, "");
+    if (prefix) return prefix.endsWith("-room") ? prefix : `${prefix}-room`;
   }
 
   // Fallback: treat as username or room slug

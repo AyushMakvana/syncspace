@@ -420,7 +420,7 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
     const unsubscribe = subscribeToRoomFirestore(roomId, (data) => {
       const signals = data.webrtcSignals || [];
       signals.forEach(async (signal) => {
-        if (signal.createdAt < mountedAtRef.current - 1000) return;
+        if (signal.createdAt < mountedAtRef.current - 30000) return;
         if (processedSignalsRef.current.has(signal.id)) return;
         if (signal.from === activeUserId) return;
         if (signal.to !== activeUserId && signal.to !== "*") return;
