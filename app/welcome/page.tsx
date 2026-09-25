@@ -67,9 +67,7 @@ export default function WelcomePage() {
       : userProfile?.uid
         ? userProfile
         : getOrCreateStableUser();
-    // Generate fresh room ID for new room creation to guarantee clean chat
-    const randomId = Math.floor(1000 + Math.random() * 9000);
-    const roomSlug = `${slug || "ayushmakvan"}-${randomId}-room`;
+    const roomSlug = `${slug || "ayushmakvan"}-room`;
 
     if (typeof window !== "undefined") {
       localStorage.setItem("syncspace_current_user", JSON.stringify({
