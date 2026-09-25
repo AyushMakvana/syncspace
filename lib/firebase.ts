@@ -4,6 +4,8 @@ import {
   getAuth,
   GoogleAuthProvider,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   signOut,
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
@@ -55,7 +57,7 @@ if (typeof window !== "undefined") {
   });
 }
 
-// Reusable Google Sign-In Popup Helper
+// Reusable Google Sign-In Helper (Popup with Redirect Fallback)
 export async function signInWithGooglePopup() {
   try {
     const result = await signInWithPopup(auth, googleProvider);
@@ -75,13 +77,17 @@ export async function signInWithGooglePopup() {
     if (!errorMsg.includes("popup-closed-by-user")) {
       console.warn("Google Auth warning:", err);
     }
-    if (typeof window !== "undefined" && errorMsg.includes("unauthorized-domain")) {
-      alert(
-        "Firebase Domain Error:\n\n" +
-        "Please add '" + window.location.hostname + "' to Authorized Domains in:\n" +
-        "Firebase Console -> Authentication -> Settings -> Authorized domains"
-      );
+
+    // If popup fails, attempt redirect fallback
+    if (typeof window !== "undefined" && (errorMsg.includes("popup-blocked") || errorMsg.includes("unauthorized-domain") || errorMsg.includes("auth/internal-error"))) {
+      try {
+        await signInWithRedirect(auth, googleProvider);
+        return { user: null, error: null };
+      } catch (redirectErr) {
+        console.warn("Google Auth redirect warning:", redirectErr);
+      }
     }
+
     return { user: null, error: errorMsg };
   }
 }
@@ -129,6 +135,23 @@ export async function signInWithEmail(email: string, pass: string) {
 
 // Subscribe to Firebase Auth state changes
 export function subscribeToAuth(callback: (user: { name: string; email: string; uid?: string } | null) => void) {
+  if (typeof window !== "undefined") {
+    getRedirectResult(auth)
+      .then((result) => {
+        if (result?.user) {
+          const profile = {
+            name: result.user.displayName || result.user.email?.split("@")[0] || "User",
+            email: result.user.email || "",
+            photoURL: result.user.photoURL || "",
+            uid: result.user.uid,
+          };
+          localStorage.setItem("syncspace_current_user", JSON.stringify(profile));
+          callback(profile);
+        }
+      })
+      .catch(() => {});
+  }
+
   return onAuthStateChanged(auth, (fbUser: FirebaseUser | null) => {
     if (fbUser) {
       const profile = {
