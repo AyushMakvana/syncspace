@@ -147,6 +147,7 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
   const pendingCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const remoteStreamsRef = useRef<Map<string, MediaStream>>(new Map());
   const remoteMediaRef = useRef<Record<string, ParticipantMedia>>({});
+  const peerLastSeenRef = useRef<Map<string, number>>(new Map());
   const mountedAtRef = useRef(0);
 
   const memberNameById = useMemo(() => {
@@ -362,8 +363,8 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
       });
 
       const needsOffer = nextStream ? publishLocalTracks(nextStream) : publishLocalTracks(new MediaStream());
-      if (needsOffer) {
-        await Promise.all(Array.from(peersRef.current.keys()).map((remoteId) => makeOffer(remoteId)));
+      if (needsOffer || nextCameraOn) {
+        await Promise.all(Array.from(peersRef.current.keys()).map((remoteId) => makeOffer(remoteId, true)));
       }
     } catch (error) {
       console.error("Camera or microphone permission failed", error);
@@ -380,6 +381,7 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
   };
 
   useEffect(() => {
+    const now = Date.now();
     const remoteIds = members
       .filter((member) => {
         const idKey = normalizeIdentity(member.id);
@@ -387,17 +389,22 @@ export default function WebRTCRoomPanel({ roomId, currentUser, members }: WebRTC
         return idKey && !localIdentityKeys.has(idKey) && !localIdentityKeys.has(nameKey);
       })
       .map((member) => member.id);
+
     for (const remoteId of remoteIds) {
+      peerLastSeenRef.current.set(remoteId, now);
       createPeer(remoteId);
-      if (activeUserId && activeUserId < remoteId) {
+      if (activeUserId && (activeUserId < remoteId || !remoteMediaRef.current[remoteId]?.stream)) {
         makeOffer(remoteId);
       }
     }
 
     peersRef.current.forEach((peer, remoteId) => {
-      if (!remoteIds.includes(remoteId)) {
+      const lastSeen = peerLastSeenRef.current.get(remoteId) || 0;
+      if (!remoteIds.includes(remoteId) && now - lastSeen > 35000) {
         peer.close();
         peersRef.current.delete(remoteId);
+        peerLastSeenRef.current.delete(remoteId);
+        remoteStreamsRef.current.delete(remoteId);
         setRemoteMedia((prev) => {
           const next = { ...prev };
           delete next[remoteId];

@@ -306,7 +306,7 @@ export default function RoomPage() {
       if (data.members && Array.isArray(data.members)) {
         const now = Date.now();
         const activeHostId = data.hostId || "";
-        const activeMembers = data.members.filter((m) => now - m.lastSeen < 8000);
+        const activeMembers = data.members.filter((m) => now - m.lastSeen < 35000);
         if (activeMembers.length > 0) {
           const seen = new Set<string>();
           const dedup: RoomMember[] = [];
@@ -384,8 +384,8 @@ export default function RoomPage() {
       if (!activeUserId) return;
       leaveMemberFirestore(roomId, activeUserId);
     };
-    window.addEventListener("beforeunload", handleUnload);
-    window.addEventListener("pagehide", handleUnload);
+    // window.addEventListener("beforeunload", handleUnload);
+    // window.addEventListener("pagehide", handleUnload);
 
     const handleStorage = (e: StorageEvent) => {
       if (e.key === `syncspace_left_${roomId}`) {
