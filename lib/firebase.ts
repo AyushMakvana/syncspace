@@ -460,7 +460,7 @@ export function heartbeatMemberFirestore(roomId: string, userId: string, name: s
   const key = `${roomId}:${memberId}`;
   const now = Date.now();
   const lastTime = lastHeartbeatTimeMap.get(key) || 0;
-  if (!previousUserId && now - lastTime < 30000) return Promise.resolve(true);
+  if (!previousUserId && now - lastTime < 5000) return Promise.resolve(true);
 
   const inFlight = heartbeatInFlightMap.get(key);
   if (inFlight) return inFlight;

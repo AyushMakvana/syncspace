@@ -396,7 +396,7 @@ export default function RoomPage() {
     syncChatMessages();
 
     // 15s heartbeat ticker (Optimized for zero Firestore quota issues)
-    const intervalId = setInterval(syncRoomMembers, 15000);
+    const intervalId = setInterval(syncRoomMembers, 5000);
 
     // Subscribe to Firestore Realtime Room updates
     const unsubscribeFirestore = subscribeToRoomFirestore(roomId, (data) => {
@@ -409,7 +409,7 @@ export default function RoomPage() {
           isHost: activeHostId ? m.id === activeHostId : Boolean(m.isHost),
           lastSeen: m.lastSeen || Date.now(),
         }));
-        upsertMembers(firestoreList, true);
+        upsertMembers(firestoreList, false);
       }
       setFirestoreSignals(data.webrtcSignals || []);
 

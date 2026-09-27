@@ -46,7 +46,6 @@ export default function YouTubePlayer({ videoId, onStateSync, syncState, clientI
   const lastSentAtRef = useRef(0);
   const lastAppliedSyncRef = useRef(0);
   const syncStateRef = useRef<typeof syncState>(syncState);
-  const autoplayRetryTimeoutRef = useRef<number | null>(null);
 
   const parseVideoId = useCallback((rawId: string) => {
     if (!rawId) return "";
@@ -57,51 +56,36 @@ export default function YouTubePlayer({ videoId, onStateSync, syncState, clientI
 
   const activeVideoId = parseVideoId(videoId);
 
-  const clearAutoplayRetry = useCallback(() => {
-    if (autoplayRetryTimeoutRef.current !== null) {
-      window.clearTimeout(autoplayRetryTimeoutRef.current);
-      autoplayRetryTimeoutRef.current = null;
-    }
-  }, []);
-
-  const playSyncedVideo = useCallback((player: YTPlayerInstance, targetTime: number) => {
-    if (typeof player.unMute === "function") player.unMute();
-    if (typeof player.setVolume === "function") player.setVolume(100);
-    player.playVideo();
-    clearAutoplayRetry();
-
-    autoplayRetryTimeoutRef.current = window.setTimeout(() => {
-      if (playerRef.current !== player) return;
-      if (typeof player.unMute === "function") player.unMute();
-      if (typeof player.setVolume === "function") player.setVolume(100);
-      player.seekTo(targetTime, true);
-      player.playVideo();
-    }, 350);
-  }, [clearAutoplayRetry]);
-
   const applySyncedPlayback = useCallback((
     player: YTPlayerInstance,
     roomSync: NonNullable<typeof syncState>
   ) => {
     const elapsed = roomSync.state === 1 ? Math.max(0, (Date.now() - roomSync.timestamp) / 1000) : 0;
     const targetTime = roomSync.currentTime + elapsed;
-    const localTime = player.getCurrentTime();
+    const localTime = typeof player.getCurrentTime === "function" ? player.getCurrentTime() : 0;
+    const drift = Math.abs(localTime - targetTime);
 
-    if (Math.abs(localTime - targetTime) > 0.75) {
+    // Only force seek if playback time has drifted by more than 3.5 seconds
+    if (drift > 3.5) {
       player.seekTo(targetTime, true);
     }
 
     if (roomSync.state === 1) {
-      playSyncedVideo(player, targetTime);
+      const currentState = typeof player.getPlayerState === "function" ? player.getPlayerState() : -1;
+      // Only trigger play if not already playing or buffering
+      if (currentState !== 1 && currentState !== 3) {
+        if (typeof player.unMute === "function") player.unMute();
+        if (typeof player.setVolume === "function") player.setVolume(100);
+        player.playVideo();
+      }
     } else if (roomSync.state === 2) {
-      clearAutoplayRetry();
       player.pauseVideo();
     }
 
     lastAppliedSyncRef.current = roomSync.timestamp;
     lastStateRef.current = roomSync.state;
     lastObservedRef.current = { time: targetTime, at: Date.now(), state: roomSync.state };
-  }, [clearAutoplayRetry, playSyncedVideo]);
+  }, []);
 
   useEffect(() => {
     syncStateRef.current = syncState;
@@ -177,15 +161,15 @@ export default function YouTubePlayer({ videoId, onStateSync, syncState, clientI
     return () => {
       if (playerRef.current) {
         try {
-          clearAutoplayRetry();
           playerRef.current.destroy();
         } catch {
           // ignore
         }
       }
     };
-  }, [activeVideoId, applySyncedPlayback, clearAutoplayRetry, onStateSync]);
+  }, [activeVideoId, applySyncedPlayback, onStateSync]);
 
+  // Periodic check for local user seek or state change
   useEffect(() => {
     if (!onStateSync) return;
 
@@ -200,12 +184,12 @@ export default function YouTubePlayer({ videoId, onStateSync, syncState, clientI
       const currentTime = player.getCurrentTime();
       const previous = lastObservedRef.current;
       const expectedTime = previous.state === 1 ? previous.time + (now - previous.at) / 1000 : previous.time;
-      const didSeek = Math.abs(currentTime - expectedTime) > 1.25;
+      const didManualSeek = Math.abs(currentTime - expectedTime) > 3.0;
       const isPlaybackOwner = !syncStateRef.current?.updatedBy || syncStateRef.current.updatedBy === clientId;
-      const shouldHeartbeat = isPlaybackOwner && state === 1 && now - lastSentAtRef.current > 2500;
+      const shouldHeartbeat = isPlaybackOwner && state === 1 && now - lastSentAtRef.current > 15000;
       const stateChanged = lastStateRef.current !== state;
 
-      if (didSeek || shouldHeartbeat || stateChanged) {
+      if (didManualSeek || shouldHeartbeat || stateChanged) {
         lastStateRef.current = state;
         lastObservedRef.current = { time: currentTime, at: now, state };
         lastSentAtRef.current = now;
@@ -213,11 +197,12 @@ export default function YouTubePlayer({ videoId, onStateSync, syncState, clientI
       } else {
         lastObservedRef.current = { time: currentTime, at: now, state };
       }
-    }, 700);
+    }, 1500);
 
     return () => window.clearInterval(intervalId);
   }, [clientId, onStateSync]);
 
+  // Apply incoming sync state updates
   useEffect(() => {
     if (!syncState || !playerRef.current || typeof playerRef.current.getCurrentTime !== "function") return;
     if (syncState.timestamp <= lastAppliedSyncRef.current) return;
@@ -231,7 +216,7 @@ export default function YouTubePlayer({ videoId, onStateSync, syncState, clientI
     }, 600);
   }, [applySyncedPlayback, syncState]);
 
-
+  // Periodic passive drift check without continuous seeks
   useEffect(() => {
     const intervalId = window.setInterval(() => {
       const player = playerRef.current;
@@ -244,33 +229,30 @@ export default function YouTubePlayer({ videoId, onStateSync, syncState, clientI
       const localTime = player.getCurrentTime();
       const drift = Math.abs(localTime - targetTime);
 
-      if (drift > 1.1 || player.getPlayerState() !== 1) {
+      // Only adjust if drift exceeds 3.5 seconds or player stopped unexpectedly
+      if (drift > 3.5 || (player.getPlayerState() !== 1 && player.getPlayerState() !== 3)) {
         isSyncingRef.current = true;
-        player.seekTo(targetTime, true);
+        if (drift > 3.5) player.seekTo(targetTime, true);
         if (player.getPlayerState() !== 1) {
-          playSyncedVideo(player, targetTime);
+          if (typeof player.unMute === "function") player.unMute();
+          if (typeof player.setVolume === "function") player.setVolume(100);
+          player.playVideo();
         }
         lastStateRef.current = 1;
         lastObservedRef.current = { time: targetTime, at: Date.now(), state: 1 };
 
         window.setTimeout(() => {
           isSyncingRef.current = false;
-        }, 450);
+        }, 600);
       }
-    }, 1000);
+    }, 3000);
 
     return () => window.clearInterval(intervalId);
-  }, [clientId, playSyncedVideo]);
+  }, [clientId]);
+
   return (
     <div className="relative h-full w-full bg-black">
       <div ref={containerRef} className="h-full w-full" />
     </div>
   );
 }
-
-
-
-
-
-
-
