@@ -67,7 +67,8 @@ export default function WelcomePage() {
       : userProfile?.uid
         ? userProfile
         : getOrCreateStableUser();
-    const roomSlug = `${slug || "ayushmakvan"}-room`;
+    const randomId = Math.floor(1000 + Math.random() * 9000);
+    const roomSlug = `${slug || "ayushmakvan"}-${randomId}-room`;
 
     if (typeof window !== "undefined") {
       localStorage.setItem("syncspace_current_user", JSON.stringify({
