@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
+import { onAuthStateChanged, User as FirebaseUser } from "firebase/auth";
 import {
   Sparkles,
   UserPlus,
@@ -38,7 +39,7 @@ import {
   signInWithGooglePopup,
   signInWithEmail,
   signUpWithEmail,
-  subscribeToAuth,
+  auth,
   registerRoomCode,
   subscribeToRoomFirestore,
   heartbeatMemberFirestore,
@@ -48,7 +49,6 @@ import {
   updateRoomPlaybackFirestore,
   MqttWebSocketRelay,
   activeGlobalRelays,
-  getOrCreateStableUser,
   FirestoreWebRTCSignal,
   signOutUser,
 } from "@/lib/firebase";
@@ -95,6 +95,7 @@ export default function RoomPage() {
   const hostName = rawHost ? rawHost.charAt(0).toUpperCase() + rawHost.slice(1) : "Ayush";
 
   const [authReady, setAuthReady] = useState(false);
+  const [authStatus, setAuthStatus] = useState<"loading" | "authenticated" | "unauthenticated">("loading");
 
   const [currentUser, setCurrentUser] = useState<{ name: string; email: string; uid?: string; photoURL?: string }>({
     name: "",
@@ -102,26 +103,73 @@ export default function RoomPage() {
   });
   const identityMigrationRef = useRef<string | null>(null);
   const isLoggingOutRef = useRef(false);
+  const wasBlockedByAuthGuardRef = useRef(false);
+
+  const applyAuthenticatedUser = useCallback((firebaseUser: FirebaseUser) => {
+    const profile = {
+      name: firebaseUser.displayName || firebaseUser.email?.split("@")[0] || "User",
+      email: firebaseUser.email || "",
+      photoURL: firebaseUser.photoURL || "",
+      uid: firebaseUser.uid,
+    };
+
+    setCurrentUser((previous) => {
+      if (previous.uid && previous.uid !== profile.uid) identityMigrationRef.current = previous.uid;
+      return profile;
+    });
+
+    if (typeof window !== "undefined") {
+      localStorage.setItem("syncspace_current_user", JSON.stringify(profile));
+    }
+
+    setShowAuthModal(false);
+    setAuthReady(true);
+    setAuthStatus("authenticated");
+  }, [setAuthReady, setAuthStatus, setCurrentUser, setShowAuthModal]);
+
+  const consumeRedirectAfterLogin = useCallback(() => {
+    if (typeof window === "undefined") return;
+    const redirectAfterLogin = sessionStorage.getItem("redirectAfterLogin");
+    if (!redirectAfterLogin) return;
+
+    sessionStorage.removeItem("redirectAfterLogin");
+    const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (redirectAfterLogin !== currentUrl) {
+      router.replace(redirectAfterLogin);
+    }
+  }, [router]);
 
   useEffect(() => {
     let active = true;
-    const unsubscribe = subscribeToAuth((userProfile) => {
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
       if (!active || isLoggingOutRef.current) return;
-      if (userProfile?.uid) {
-        setCurrentUser((previous) => {
-          if (previous.uid && previous.uid !== userProfile.uid) identityMigrationRef.current = previous.uid;
-          return userProfile;
-        });
-      } else {
-        setCurrentUser(getOrCreateStableUser());
+
+      if (firebaseUser) {
+        applyAuthenticatedUser(firebaseUser);
+        if (wasBlockedByAuthGuardRef.current) {
+          wasBlockedByAuthGuardRef.current = false;
+          consumeRedirectAfterLogin();
+        }
+        return;
       }
-      setAuthReady(true);
+
+      setCurrentUser({ name: "", email: "" });
+      setAuthReady(false);
+      setAuthStatus("unauthenticated");
+      setAuthModalStep("initial");
+      setShowAuthModal(true);
+      wasBlockedByAuthGuardRef.current = true;
+
+      if (typeof window !== "undefined") {
+        const redirectUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+        sessionStorage.setItem("redirectAfterLogin", redirectUrl);
+      }
     });
     return () => {
       active = false;
       unsubscribe();
     };
-  }, []);
+  }, [applyAuthenticatedUser, consumeRedirectAfterLogin]);
 
   const hostStorageKey = `syncspace_host_${roomId}`;
   const [members, setMembers] = useState<RoomMember[]>([]);
@@ -159,7 +207,7 @@ export default function RoomPage() {
   const lastPlaybackPersistRef = useRef({ state: -1, currentTime: 0, at: 0 });
 
   const getActiveUserId = useCallback(() => {
-    const uid = currentUser.uid || getOrCreateStableUser().uid;
+    const uid = currentUser.uid || "";
     return uid.trim();
   }, [currentUser.uid]);
 
@@ -287,7 +335,7 @@ export default function RoomPage() {
 
     const chatKey = `syncspace_chat_messages_${roomId}`;
     const activeUserId = currentUser.uid.trim();
-    const activeName = currentUser.name || getOrCreateStableUser().name;
+    const activeName = currentUser.name;
     const savedHostForRoom = localStorage.getItem(hostStorageKey) || "";
     const isRoomHost = savedHostForRoom.toLowerCase().trim() === activeName.toLowerCase().trim();
 
@@ -601,6 +649,14 @@ export default function RoomPage() {
       {/* Static Room Background */}
       <div className="fixed inset-0 z-0 bg-[radial-gradient(circle_at_50%_0%,rgba(88,28,135,0.28),transparent_42%),#000]" />
 
+      {authStatus === "loading" && (
+        <div className="relative z-10 grid min-h-svh place-items-center">
+          <div className="size-10 animate-spin rounded-full border-2 border-yellow-300 border-t-transparent" />
+        </div>
+      )}
+
+      {authStatus === "authenticated" && (
+        <>
       {/* Main Room Container Layer */}
       <div className="relative z-10 flex h-svh flex-col">
         {/* Top Room Navigation Bar */}
@@ -1211,6 +1267,9 @@ export default function RoomPage() {
           }
         }}      />
 
+        </>
+      )}
+
       {/* Join Room Auth Modal for Unauthenticated Direct Links */}
       {showAuthModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
@@ -1225,12 +1284,14 @@ export default function RoomPage() {
             {authModalStep === "initial" && (
               <>
                 <div className="text-center">
-                  <h2 className="text-2xl font-black text-white">Join Room</h2>
+                  <h2 className="text-2xl font-black text-white">Create Room</h2>
                   <p className="mt-1 text-xs font-medium text-white/70">
-                    You were invited to join <span className="font-bold text-yellow-200">{roomTitle}</span>
+                    Set up your room and invite friends
                   </p>
                   <p className="mt-3 text-xs leading-relaxed text-white/60">
-                    Please log in or sign up to join the watch party with your friends.
+                    Creating a room requires an account. But don&apos;t worry,{" "}
+                    <span className="font-bold text-yellow-200">it&apos;s free</span>,
+                    and your friends can join your room without signing up.
                   </p>
                 </div>
 
@@ -1240,7 +1301,10 @@ export default function RoomPage() {
                       const { user, error } = await signInWithGooglePopup();
                       if (user) {
                         setCurrentUser(user);
+                        setAuthReady(true);
+                        setAuthStatus("authenticated");
                         setShowAuthModal(false);
+                        consumeRedirectAfterLogin();
                       } else if (error && !error.includes("popup-closed-by-user")) {
                         console.warn("Firebase Google Auth warning:", error);
                       }
@@ -1290,7 +1354,10 @@ export default function RoomPage() {
                     const { user, error } = await signInWithEmail(email, authPassword);
                     if (user) {
                       setCurrentUser(user);
+                      setAuthReady(true);
+                      setAuthStatus("authenticated");
                       setShowAuthModal(false);
+                      consumeRedirectAfterLogin();
                     } else if (error) {
                       alert(error || "Invalid credentials. If you are new, click Sign Up below.");
                     }
@@ -1368,7 +1435,10 @@ export default function RoomPage() {
                     const { user, error } = await signUpWithEmail(authEmail, authPassword, name);
                     if (user) {
                       setCurrentUser(user);
+                      setAuthReady(true);
+                      setAuthStatus("authenticated");
                       setShowAuthModal(false);
+                      consumeRedirectAfterLogin();
                     } else if (error) {
                       alert(error || "Sign up error. Please check your details.");
                     }
