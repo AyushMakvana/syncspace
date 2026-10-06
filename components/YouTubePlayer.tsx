@@ -1,13 +1,22 @@
 "use client";
 
-import React, { useEffect, useRef, useCallback } from "react";
+import React, { memo, useCallback, useEffect, useRef } from "react";
+
+type PlaybackCommand = "play" | "pause" | "seek";
+
+export interface PlaybackState {
+  isPlaying: boolean;
+  position: number;
+  updatedAtMs: number;
+  updatedBy: string;
+  commandId: string;
+  version: number;
+}
 
 interface YouTubePlayerProps {
   videoId: string;
-  isHost?: boolean;
-  onStateSync?: (state: number, currentTime: number) => void;
-  syncState?: { state: number; currentTime: number; timestamp: number; updatedBy?: string } | null;
-  clientId?: string;
+  onPlaybackCommand?: (command: PlaybackCommand, currentTime: number) => void;
+  playbackState?: PlaybackState | null;
 }
 
 interface YTPlayerInstance {
@@ -16,11 +25,11 @@ interface YTPlayerInstance {
   seekTo: (seconds: number, allowSeekAhead: boolean) => void;
   playVideo: () => void;
   pauseVideo: () => void;
-  mute: () => void;
-  unMute: () => void;
-  setVolume: (volume: number) => void;
-  isMuted: () => boolean;
+  mute?: () => void;
+  unMute?: () => void;
   getPlayerState: () => number;
+  loadVideoById: (videoId: string | { videoId: string; startSeconds?: number }) => void;
+  cueVideoById: (videoId: string | { videoId: string; startSeconds?: number }) => void;
 }
 
 interface YTPlayerEvent {
@@ -37,79 +46,168 @@ declare global {
   }
 }
 
-export default function YouTubePlayer({ videoId, onStateSync, syncState, clientId }: YouTubePlayerProps) {
+const YT_PLAYING = 1;
+const YT_PAUSED = 2;
+const YT_BUFFERING = 3;
+const SEEK_DETECTION_SECONDS = 0.5;
+const DRIFT_CHECK_MS = 4000;
+const DRIFT_SEEK_SECONDS = 2.5;
+const DRIFT_CORRECTION_COOLDOWN_MS = 5000;
+
+function parseVideoId(rawId: string) {
+  if (!rawId) return "";
+  if (rawId.length === 11 && !rawId.includes("/")) return rawId;
+  const match = rawId.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=|shorts\/))([\w-]{11})/);
+  return match ? match[1] : rawId;
+}
+
+function isReadyPlayer(player: YTPlayerInstance | null): player is YTPlayerInstance {
+  return Boolean(
+    player &&
+    typeof player.getPlayerState === "function" &&
+    typeof player.getCurrentTime === "function" &&
+    typeof player.seekTo === "function" &&
+    typeof player.playVideo === "function" &&
+    typeof player.pauseVideo === "function"
+  );
+}
+
+function YouTubePlayer({ videoId, onPlaybackCommand, playbackState }: YouTubePlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<YTPlayerInstance | null>(null);
-  const isSyncingRef = useRef(false);
-  const lastStateRef = useRef(-1);
-  const lastObservedRef = useRef({ time: 0, at: 0, state: -1 });
-  const lastSentAtRef = useRef(0);
-  const lastAppliedSyncRef = useRef(0);
-  const syncStateRef = useRef<typeof syncState>(syncState);
+  const isReadyRef = useRef(false);
+  const isApplyingRemoteRef = useRef(false);
+  const waitingForBufferExitRef = useRef(false);
+  const activeVideoIdRef = useRef(parseVideoId(videoId));
+  const onPlaybackCommandRef = useRef(onPlaybackCommand);
+  const playbackStateRef = useRef<PlaybackState | null>(playbackState);
+  const lastKnownRef = useRef({ time: 0, at: 0, state: -1 });
+  const lastAppliedVersionRef = useRef(0);
+  const lastCorrectionAtRef = useRef(0);
+  const autoplayTimerRef = useRef<number | null>(null);
+  const unmuteTimerRef = useRef<number | null>(null);
 
-  const parseVideoId = useCallback((rawId: string) => {
-    if (!rawId) return "";
-    if (rawId.length === 11 && !rawId.includes("/")) return rawId;
-    const match = rawId.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=|shorts\/))([\w-]{11})/);
-    return match ? match[1] : rawId;
+  const clearAutoplayTimers = useCallback(() => {
+    if (autoplayTimerRef.current) {
+      window.clearTimeout(autoplayTimerRef.current);
+      autoplayTimerRef.current = null;
+    }
+    if (unmuteTimerRef.current) {
+      window.clearTimeout(unmuteTimerRef.current);
+      unmuteTimerRef.current = null;
+    }
   }, []);
 
-  const activeVideoId = parseVideoId(videoId);
+  const forceAutoplay = useCallback((player: YTPlayerInstance) => {
+    if (!isReadyPlayer(player)) return;
+    if (typeof player.mute === "function") player.mute();
+    player.playVideo();
 
-  const applySyncedPlayback = useCallback((
-    player: YTPlayerInstance,
-    roomSync: NonNullable<typeof syncState>
-  ) => {
-    const elapsed = roomSync.state === 1 ? Math.max(0, (Date.now() - roomSync.timestamp) / 1000) : 0;
-    const targetTime = roomSync.currentTime + elapsed;
-    const localTime = typeof player.getCurrentTime === "function" ? player.getCurrentTime() : 0;
-    const drift = Math.abs(localTime - targetTime);
+    if (unmuteTimerRef.current) window.clearTimeout(unmuteTimerRef.current);
+    unmuteTimerRef.current = window.setTimeout(() => {
+      const readyPlayer = playerRef.current;
+      if (isReadyPlayer(readyPlayer) && typeof readyPlayer.unMute === "function") {
+        readyPlayer.unMute();
+      }
+    }, 500);
+  }, []);
 
-    // Only force seek if playback time has drifted by more than 3.5 seconds
-    if (drift > 3.5) {
-      player.seekTo(targetTime, true);
+  const applyPlaybackState = useCallback((player: YTPlayerInstance, incoming: PlaybackState, force = false) => {
+    if (!isReadyPlayer(player)) return;
+    if (!force && incoming.version <= lastAppliedVersionRef.current) return;
+
+    const currentPlayerState = player.getPlayerState();
+    if (waitingForBufferExitRef.current) {
+      if (currentPlayerState === YT_BUFFERING) return;
+      waitingForBufferExitRef.current = false;
     }
 
-    if (roomSync.state === 1) {
-      const currentState = typeof player.getPlayerState === "function" ? player.getPlayerState() : -1;
-      // Only trigger play if not already playing or buffering
-      if (currentState !== 1 && currentState !== 3) {
-        if (typeof player.unMute === "function") player.unMute();
-        if (typeof player.setVolume === "function") player.setVolume(100);
-        player.playVideo();
-      }
-    } else if (roomSync.state === 2) {
+    const targetTime = incoming.isPlaying
+      ? incoming.position + Math.max(0, (Date.now() - incoming.updatedAtMs) / 1000)
+      : incoming.position;
+    const currentTime = player.getCurrentTime();
+    const shouldSeek = Math.abs(currentTime - targetTime) > 0.35;
+
+    isApplyingRemoteRef.current = true;
+
+    if (shouldSeek) {
+      player.seekTo(targetTime, true);
+      waitingForBufferExitRef.current = true;
+    }
+
+    if (incoming.isPlaying && currentPlayerState !== YT_PLAYING) {
+      player.playVideo();
+    } else if (!incoming.isPlaying && currentPlayerState !== YT_PAUSED) {
       player.pauseVideo();
     }
 
-    lastAppliedSyncRef.current = roomSync.timestamp;
-    lastStateRef.current = roomSync.state;
-    lastObservedRef.current = { time: targetTime, at: Date.now(), state: roomSync.state };
+    lastAppliedVersionRef.current = incoming.version;
+    lastKnownRef.current = {
+      time: targetTime,
+      at: Date.now(),
+      state: incoming.isPlaying ? YT_PLAYING : YT_PAUSED,
+    };
+
+    window.setTimeout(() => {
+      isApplyingRemoteRef.current = false;
+    }, 250);
   }, []);
 
   useEffect(() => {
-    syncStateRef.current = syncState;
-  }, [syncState]);
+    onPlaybackCommandRef.current = onPlaybackCommand;
+  }, [onPlaybackCommand]);
+
+  useEffect(() => {
+    playbackStateRef.current = playbackState;
+  }, [playbackState]);
+
+  useEffect(() => {
+    activeVideoIdRef.current = parseVideoId(videoId);
+    const player = playerRef.current;
+    if (!isReadyPlayer(player) || !isReadyRef.current || !activeVideoIdRef.current) return;
+
+    const savedState = playbackStateRef.current;
+    const startSeconds = savedState
+      ? savedState.isPlaying
+        ? savedState.position + Math.max(0, (Date.now() - savedState.updatedAtMs) / 1000)
+        : savedState.position
+      : 0;
+
+    isApplyingRemoteRef.current = true;
+    if (typeof player.loadVideoById === "function") {
+      player.loadVideoById({ videoId: activeVideoIdRef.current, startSeconds });
+    }
+    if (autoplayTimerRef.current) window.clearTimeout(autoplayTimerRef.current);
+    autoplayTimerRef.current = window.setTimeout(() => {
+      const readyPlayer = playerRef.current;
+      if (!isReadyPlayer(readyPlayer)) return;
+      isApplyingRemoteRef.current = true;
+      forceAutoplay(readyPlayer);
+      const latestState = playbackStateRef.current;
+      if (latestState) applyPlaybackState(readyPlayer, latestState, true);
+      window.setTimeout(() => {
+        isApplyingRemoteRef.current = false;
+      }, 300);
+    }, 300);
+    window.setTimeout(() => {
+      isApplyingRemoteRef.current = false;
+    }, 250);
+  }, [applyPlaybackState, forceAutoplay, videoId]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    let cancelled = false;
 
     const initPlayer = () => {
-      if (!containerRef.current || !activeVideoId) return;
+      if (!containerRef.current || !activeVideoIdRef.current || isReadyPlayer(playerRef.current)) return;
 
-      if (playerRef.current) {
-        try {
-          playerRef.current.destroy();
-        } catch {
-          // ignore
-        }
-      }
-
-      playerRef.current = new window.YT.Player(containerRef.current, {
-        videoId: activeVideoId,
+      new window.YT.Player(containerRef.current, {
+        videoId: activeVideoIdRef.current,
         playerVars: {
           autoplay: 1,
+          mute: 0,
           controls: 1,
+          enablejsapi: 1,
           modestbranding: 1,
           playsinline: 1,
           rel: 0,
@@ -117,32 +215,54 @@ export default function YouTubePlayer({ videoId, onStateSync, syncState, clientI
         },
         events: {
           onReady: (event: YTPlayerEvent) => {
-            const initialSync = syncStateRef.current;
-            if (initialSync) {
-              applySyncedPlayback(event.target, initialSync);
-            } else {
-              event.target.playVideo();
+            if (!isReadyPlayer(event.target)) return;
+            if (cancelled) {
+              if (typeof event.target.destroy === "function") event.target.destroy();
+              return;
+            }
+            playerRef.current = event.target;
+            isReadyRef.current = true;
+            forceAutoplay(event.target);
+            const savedState = playbackStateRef.current;
+            if (savedState) {
+              applyPlaybackState(event.target, savedState);
             }
           },
           onStateChange: (event: YTPlayerEvent) => {
-            if (isSyncingRef.current) return;
-            const currentState = event.data;
-            const currentTime = event.target.getCurrentTime ? event.target.getCurrentTime() : 0;
+            if (isApplyingRemoteRef.current) return;
+            if (!isReadyPlayer(event.target)) return;
 
-            if (currentState === 1 || currentState === 2) {
-              lastObservedRef.current = { time: currentTime, at: Date.now(), state: currentState };
-              if (lastStateRef.current !== currentState) {
-                lastStateRef.current = currentState;
-                lastSentAtRef.current = Date.now();
-                onStateSync?.(currentState, currentTime);
-              }
+            const state = event.data;
+            if (state === YT_BUFFERING) return;
+            if (state !== YT_PLAYING && state !== YT_PAUSED) return;
+
+            if (waitingForBufferExitRef.current) {
+              waitingForBufferExitRef.current = false;
             }
+
+            const now = Date.now();
+            const currentTime = event.target.getCurrentTime();
+            const previous = lastKnownRef.current;
+            const expectedTime = previous.state === YT_PLAYING
+              ? previous.time + (now - previous.at) / 1000
+              : previous.time;
+            const didSeek = Math.abs(currentTime - expectedTime) > SEEK_DETECTION_SECONDS;
+
+            lastKnownRef.current = { time: currentTime, at: now, state };
+
+            if (didSeek) {
+              event.target.seekTo(currentTime, true);
+              onPlaybackCommandRef.current?.("seek", currentTime);
+              return;
+            }
+
+            onPlaybackCommandRef.current?.(state === YT_PLAYING ? "play" : "pause", currentTime);
           },
         },
       });
     };
 
-    if (window.YT && window.YT.Player) {
+    if (window.YT?.Player) {
       initPlayer();
     } else {
       const existingScript = document.querySelector<HTMLScriptElement>('script[src="https://www.youtube.com/iframe_api"]');
@@ -159,100 +279,54 @@ export default function YouTubePlayer({ videoId, onStateSync, syncState, clientI
     }
 
     return () => {
-      if (playerRef.current) {
+      cancelled = true;
+      clearAutoplayTimers();
+      if (isReadyPlayer(playerRef.current) && typeof playerRef.current.destroy === "function") {
         try {
           playerRef.current.destroy();
         } catch {
-          // ignore
+          // ignore stale iframe cleanup failures
         }
       }
+      playerRef.current = null;
+      isReadyRef.current = false;
     };
-  }, [activeVideoId, applySyncedPlayback, onStateSync]);
+  }, [applyPlaybackState, clearAutoplayTimers, forceAutoplay]);
 
-  // Periodic check for local user seek or state change
   useEffect(() => {
-    if (!onStateSync) return;
+    const player = playerRef.current;
+    if (!playbackState || !isReadyPlayer(player) || !isReadyRef.current) return;
+    applyPlaybackState(player, playbackState);
+  }, [applyPlaybackState, playbackState]);
 
+  useEffect(() => {
     const intervalId = window.setInterval(() => {
       const player = playerRef.current;
-      if (!player || isSyncingRef.current || typeof player.getCurrentTime !== "function") return;
+      const state = playbackStateRef.current;
+      if (!isReadyPlayer(player) || !state?.isPlaying || isApplyingRemoteRef.current) return;
 
-      const state = player.getPlayerState();
-      if (state !== 1 && state !== 2) return;
+      const playerState = player.getPlayerState();
+      if (playerState === YT_BUFFERING) return;
 
       const now = Date.now();
-      const currentTime = player.getCurrentTime();
-      const previous = lastObservedRef.current;
-      const expectedTime = previous.state === 1 ? previous.time + (now - previous.at) / 1000 : previous.time;
-      const didManualSeek = Math.abs(currentTime - expectedTime) > 3.0;
-      const isPlaybackOwner = !syncStateRef.current?.updatedBy || syncStateRef.current.updatedBy === clientId;
-      const shouldHeartbeat = isPlaybackOwner && state === 1 && now - lastSentAtRef.current > 15000;
-      const stateChanged = lastStateRef.current !== state;
+      if (now - lastCorrectionAtRef.current < DRIFT_CORRECTION_COOLDOWN_MS) return;
 
-      if (didManualSeek || shouldHeartbeat || stateChanged) {
-        lastStateRef.current = state;
-        lastObservedRef.current = { time: currentTime, at: now, state };
-        lastSentAtRef.current = now;
-        onStateSync(state, currentTime);
-      } else {
-        lastObservedRef.current = { time: currentTime, at: now, state };
+      const correctedTime = state.position + Math.max(0, (now - state.updatedAtMs) / 1000);
+      const drift = Math.abs(player.getCurrentTime() - correctedTime);
+      if (drift > DRIFT_SEEK_SECONDS) {
+        lastCorrectionAtRef.current = now;
+        player.seekTo(correctedTime, true);
       }
-    }, 1500);
+    }, DRIFT_CHECK_MS);
 
     return () => window.clearInterval(intervalId);
-  }, [clientId, onStateSync]);
-
-  // Apply incoming sync state updates
-  useEffect(() => {
-    if (!syncState || !playerRef.current || typeof playerRef.current.getCurrentTime !== "function") return;
-    if (syncState.timestamp <= lastAppliedSyncRef.current) return;
-
-    const player = playerRef.current;
-    isSyncingRef.current = true;
-    applySyncedPlayback(player, syncState);
-
-    window.setTimeout(() => {
-      isSyncingRef.current = false;
-    }, 600);
-  }, [applySyncedPlayback, syncState]);
-
-  // Periodic passive drift check without continuous seeks
-  useEffect(() => {
-    const intervalId = window.setInterval(() => {
-      const player = playerRef.current;
-      const roomSync = syncStateRef.current;
-      if (!player || !roomSync || isSyncingRef.current || typeof player.getCurrentTime !== "function") return;
-      if (roomSync.state !== 1 || roomSync.updatedBy === clientId) return;
-
-      const elapsed = Math.max(0, (Date.now() - roomSync.timestamp) / 1000);
-      const targetTime = roomSync.currentTime + elapsed;
-      const localTime = player.getCurrentTime();
-      const drift = Math.abs(localTime - targetTime);
-
-      // Only adjust if drift exceeds 3.5 seconds or player stopped unexpectedly
-      if (drift > 3.5 || (player.getPlayerState() !== 1 && player.getPlayerState() !== 3)) {
-        isSyncingRef.current = true;
-        if (drift > 3.5) player.seekTo(targetTime, true);
-        if (player.getPlayerState() !== 1) {
-          if (typeof player.unMute === "function") player.unMute();
-          if (typeof player.setVolume === "function") player.setVolume(100);
-          player.playVideo();
-        }
-        lastStateRef.current = 1;
-        lastObservedRef.current = { time: targetTime, at: Date.now(), state: 1 };
-
-        window.setTimeout(() => {
-          isSyncingRef.current = false;
-        }, 600);
-      }
-    }, 3000);
-
-    return () => window.clearInterval(intervalId);
-  }, [clientId]);
+  }, []);
 
   return (
     <div className="relative h-full w-full bg-black">
-      <div ref={containerRef} className="h-full w-full" />
+      <div ref={containerRef} className="h-full w-full min-h-[360px]" style={{ width: "100%", height: "100%", minHeight: "360px" }} />
     </div>
   );
 }
+
+export default memo(YouTubePlayer);

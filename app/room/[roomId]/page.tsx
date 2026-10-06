@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef, useCallback, useSyncExternalStore }
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { onAuthStateChanged, User as FirebaseUser } from "firebase/auth";
+import { doc, onSnapshot, setDoc } from "firebase/firestore";
 import {
   Sparkles,
   UserPlus,
@@ -32,7 +33,7 @@ import {
 
 import { LiquidGlassCard } from "@/components/ui/liquid-weather-glass";
 import { LiquidButton } from "@/components/ui/liquid-glass-button";
-import YouTubePlayer from "@/components/YouTubePlayer";
+import YouTubePlayer, { PlaybackState } from "@/components/YouTubePlayer";
 import YouTubeSearchModal from "@/components/YouTubeSearchModal";
 import WebRTCRoomPanel from "@/components/WebRTCRoomPanel";
 import {
@@ -45,12 +46,11 @@ import {
   heartbeatMemberFirestore,
   leaveMemberFirestore,
   sendChatMessageFirestore,
-  updateRoomMediaFirestore,
-  updateRoomPlaybackFirestore,
   MqttWebSocketRelay,
   activeGlobalRelays,
   FirestoreWebRTCSignal,
   signOutUser,
+  db,
 } from "@/lib/firebase";
 
 interface ChatMessage {
@@ -69,6 +69,8 @@ interface RoomMember {
   isHost: boolean;
   online: boolean;
 }
+
+type PlaybackCommand = "play" | "pause" | "seek";
 
 export default function RoomPage() {
   const router = useRouter();
@@ -197,54 +199,130 @@ export default function RoomPage() {
   // Media Player State
   const [selectedMediaUrl, setSelectedMediaUrl] = useState<string>("");
   const [mediaTitle, setMediaTitle] = useState<string>("");
-  const [youtubeSyncState, setYoutubeSyncState] = useState<{
-    state: number;
-    currentTime: number;
-    timestamp: number;
-    updatedBy?: string;
-  } | null>(null);
-  const lastPlaybackTimestampRef = useRef(0);
-  const lastPlaybackPersistRef = useRef({ state: -1, currentTime: 0, at: 0 });
+  const [youtubeSyncState, setYoutubeSyncState] = useState<PlaybackState | null>(null);
+  const playbackVersionRef = useRef(0);
+  const playbackIsPlayingRef = useRef(false);
+  const seekDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingSeekCommandRef = useRef<PlaybackState | null>(null);
+  const lastSentCommandIdRef = useRef<string | null>(null);
 
   const getActiveUserId = useCallback(() => {
     const uid = currentUser.uid || "";
     return uid.trim();
   }, [currentUser.uid]);
 
-  const handleYouTubeStateSync = useCallback((state: number, currentTime: number) => {
-    const activeUserId = getActiveUserId();
-    if (!activeUserId) return;
+  const applyIncomingPlayback = useCallback((incoming: PlaybackState) => {
+    if (incoming.commandId === lastSentCommandIdRef.current) return;
+    if (incoming.version <= playbackVersionRef.current) return;
+    playbackVersionRef.current = incoming.version;
+    playbackIsPlayingRef.current = incoming.isPlaying;
+    setYoutubeSyncState(incoming);
+  }, []);
 
-    const timestamp = Date.now();
-    lastPlaybackTimestampRef.current = timestamp;
-    setYoutubeSyncState({ state, currentTime, timestamp, updatedBy: activeUserId });
+  const createPlaybackCommand = useCallback((
+    command: PlaybackCommand,
+    currentTime: number,
+    updatedBy: string
+  ): PlaybackState => {
+    const version = playbackVersionRef.current + 1;
+    const isPlaying = command === "play" ? true : command === "pause" ? false : playbackIsPlayingRef.current;
+    return {
+      isPlaying,
+      position: currentTime,
+      updatedAtMs: Date.now(),
+      updatedBy,
+      version,
+      commandId: typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `cmd-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    };
+  }, []);
 
-    const previous = lastPlaybackPersistRef.current;
-    const expectedTime = previous.state === 1
-      ? previous.currentTime + Math.max(0, timestamp - previous.at) / 1000
-      : previous.currentTime;
-    const shouldPersist = previous.state === -1 || state !== previous.state ||
-      Math.abs(currentTime - expectedTime) > 2 || timestamp - previous.at >= 30000;
-    if (shouldPersist) {
-      lastPlaybackPersistRef.current = { state, currentTime, at: timestamp };
-      updateRoomPlaybackFirestore(roomId, {
-        state,
-        currentTime,
-        updatedBy: activeUserId,
-        updatedAt: timestamp,
-      });
-    }
+  const normalizePlaybackState = useCallback((raw: unknown): PlaybackState | null => {
+    if (!raw || typeof raw !== "object") return null;
+    const playback = raw as Partial<PlaybackState> & {
+      currentTime?: number;
+      updatedAt?: number;
+      state?: number;
+    };
+    const position = typeof playback.position === "number" ? playback.position : playback.currentTime;
+    const updatedAtMs = typeof playback.updatedAtMs === "number" ? playback.updatedAtMs : playback.updatedAt;
+    const version = Number(playback.version || updatedAtMs || 0);
+    if (typeof position !== "number" || typeof updatedAtMs !== "number" || !version) return null;
 
+    return {
+      isPlaying: typeof playback.isPlaying === "boolean" ? playback.isPlaying : playback.state === 1,
+      position,
+      updatedAtMs,
+      updatedBy: playback.updatedBy || "",
+      commandId: playback.commandId || `firestore-${updatedAtMs}`,
+      version,
+    };
+  }, []);
+
+  const broadcastPlaybackCommand = useCallback((playback: PlaybackState, media?: { mediaUrl?: string; mediaTitle?: string }) => {
     if (channelRef.current) {
       channelRef.current.postMessage({
         type: "MEDIA_SYNC",
-        state,
-        currentTime,
-        timestamp,
-        updatedBy: activeUserId,
+        ...media,
+        ...playback,
       });
     }
-  }, [getActiveUserId, roomId]);
+
+  }, []);
+
+  const writePlaybackCommand = useCallback((playback: PlaybackState) => {
+    void setDoc(doc(db, "rooms", roomId), {
+      playback,
+      updatedAt: playback.updatedAtMs,
+    }, { merge: true });
+  }, [roomId]);
+
+  const emitPlaybackCommand = useCallback((playback: PlaybackState, command: PlaybackCommand, media?: { mediaUrl?: string; mediaTitle?: string }) => {
+    lastSentCommandIdRef.current = playback.commandId;
+    playbackVersionRef.current = playback.version;
+    playbackIsPlayingRef.current = playback.isPlaying;
+    setYoutubeSyncState(playback);
+    broadcastPlaybackCommand(playback, media);
+
+    if (media?.mediaUrl) {
+      void setDoc(doc(db, "rooms", roomId), {
+        mediaUrl: media.mediaUrl,
+        mediaType: "youtube",
+        mediaTitle: media.mediaTitle || "",
+        playback,
+        updatedAt: playback.updatedAtMs,
+      }, { merge: true });
+      return;
+    }
+
+    if (command === "seek") {
+      pendingSeekCommandRef.current = playback;
+      if (seekDebounceTimerRef.current) clearTimeout(seekDebounceTimerRef.current);
+      seekDebounceTimerRef.current = setTimeout(() => {
+        const pendingSeek = pendingSeekCommandRef.current;
+        if (!pendingSeek) return;
+        pendingSeekCommandRef.current = null;
+        writePlaybackCommand(pendingSeek);
+      }, 300);
+      return;
+    }
+
+    writePlaybackCommand(playback);
+  }, [broadcastPlaybackCommand, roomId, writePlaybackCommand]);
+
+  const handleYouTubeCommand = useCallback((command: PlaybackCommand, currentTime: number) => {
+    const activeUserId = getActiveUserId();
+    if (!activeUserId) return;
+
+    emitPlaybackCommand(createPlaybackCommand(command, currentTime, activeUserId), command);
+  }, [createPlaybackCommand, emitPlaybackCommand, getActiveUserId]);
+
+  useEffect(() => {
+    return () => {
+      if (seekDebounceTimerRef.current) clearTimeout(seekDebounceTimerRef.current);
+    };
+  }, []);
 
   // Chat State
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -373,7 +451,7 @@ export default function RoomPage() {
     try {
       mqttRelay = new MqttWebSocketRelay(roomId, activeUserId, (data) => {
         if (!data || typeof data !== "object") return;
-        const { type, member, user: remoteUser, text, mediaUrl, state, currentTime, timestamp, updatedBy } = data;
+        const { type, member, user: remoteUser, text, mediaUrl } = data;
 
         if (type === "USER_PRESENCE" && member && member.id && member.name) {
           upsertMembers([{
@@ -400,11 +478,6 @@ export default function RoomPage() {
           });
         } else if (type === "MEDIA_SELECTED" && mediaUrl) {
           setSelectedMediaUrl(mediaUrl);
-        } else if (type === "MEDIA_SYNC" && typeof state === "number" && typeof currentTime === "number" && typeof timestamp === "number") {
-          if (timestamp > lastPlaybackTimestampRef.current) {
-            lastPlaybackTimestampRef.current = timestamp;
-            setYoutubeSyncState({ state, currentTime, timestamp, updatedBy });
-          }
         }
       });
       mqttRelayRef.current = mqttRelay;
@@ -486,18 +559,14 @@ export default function RoomPage() {
         setSelectedMediaUrl((prev) => (prev === data.mediaUrl ? prev : data.mediaUrl || ""));
         setMediaTitle(typeof data.mediaTitle === "string" ? data.mediaTitle : "");
       }
-
-      if (data.playback && data.playback.updatedAt > lastPlaybackTimestampRef.current) {
-        lastPlaybackTimestampRef.current = data.playback.updatedAt;
-        setYoutubeSyncState({
-          state: data.playback.state,
-          currentTime: data.playback.currentTime,
-          timestamp: data.playback.updatedAt,
-          updatedBy: data.playback.updatedBy,
-        });
-      }
     }, () => {
       setRoomSnapshotAvailable(false);
+    });
+
+    const unsubscribePlayback = onSnapshot(doc(db, "rooms", roomId), { includeMetadataChanges: true }, (snapshot) => {
+      if (snapshot.metadata.hasPendingWrites) return;
+      const incoming = normalizePlaybackState(snapshot.data()?.playback);
+      if (incoming) applyIncomingPlayback(incoming);
     });
 
     const handleUnload = () => {
@@ -524,7 +593,7 @@ export default function RoomPage() {
       // eslint-disable-next-line react-hooks/immutability
       channelRef.current = channel;
       channel.onmessage = (event) => {
-        const { type, mediaUrl, state, currentTime, timestamp, updatedBy } = event.data;
+        const { type, mediaUrl } = event.data;
         if (type === "USER_JOINED" || type === "USER_LEFT") {
           syncRoomMembers();
         } else if (type === "CHAT_MESSAGE") {
@@ -532,16 +601,15 @@ export default function RoomPage() {
         } else if (type === "MEDIA_SELECTED") {
           setSelectedMediaUrl(mediaUrl);
         } else if (type === "MEDIA_SYNC") {
-          if (timestamp > lastPlaybackTimestampRef.current) {
-            lastPlaybackTimestampRef.current = timestamp;
-            setYoutubeSyncState({ state, currentTime, timestamp, updatedBy });
-          }
+          const incoming = normalizePlaybackState(event.data);
+          if (incoming) applyIncomingPlayback(incoming);
         }
       };
 
       return () => {
         clearInterval(intervalId);
         unsubscribeFirestore();
+        unsubscribePlayback();
         window.removeEventListener("beforeunload", handleUnload);
         window.removeEventListener("pagehide", handleUnload);
         window.removeEventListener("storage", handleStorage);
@@ -555,6 +623,7 @@ export default function RoomPage() {
       return () => {
         clearInterval(intervalId);
         unsubscribeFirestore();
+        unsubscribePlayback();
         window.removeEventListener("beforeunload", handleUnload);
         window.removeEventListener("pagehide", handleUnload);
         window.removeEventListener("storage", handleStorage);
@@ -564,7 +633,7 @@ export default function RoomPage() {
         }
       };
     }
-  }, [roomId, rawHost, uniqueCode, hostStorageKey, upsertMembers, getActiveUserId, authReady, currentUser.uid, currentUser.name]);
+  }, [roomId, rawHost, uniqueCode, hostStorageKey, upsertMembers, getActiveUserId, authReady, currentUser.uid, currentUser.name, applyIncomingPlayback, normalizePlaybackState]);
 
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -980,9 +1049,8 @@ export default function RoomPage() {
                   {selectedMediaUrl.includes("youtube.com") || selectedMediaUrl.includes("youtu.be") || selectedMediaUrl.length === 11 ? (
                     <YouTubePlayer
                       videoId={selectedMediaUrl}
-                      onStateSync={handleYouTubeStateSync}
-                      syncState={youtubeSyncState}
-                      clientId={getActiveUserId()}
+                      onPlaybackCommand={handleYouTubeCommand}
+                      playbackState={youtubeSyncState}
                     />
                   ) : (
                     <video
@@ -1251,20 +1319,11 @@ export default function RoomPage() {
         onClose={() => setIsMediaOpen(false)}
         onSelectVideo={(videoId, fullUrl, title) => {
           const selectedTitle = title || "YouTube video";
+          const activeUserId = getActiveUserId();
           setSelectedMediaUrl(fullUrl);
           setMediaTitle(selectedTitle);
-          const timestamp = Date.now();
-          lastPlaybackTimestampRef.current = timestamp;
-          setYoutubeSyncState({ state: 1, currentTime: 0, timestamp, updatedBy: getActiveUserId() });
-          updateRoomMediaFirestore(roomId, {
-            url: fullUrl,
-            type: videoId ? "youtube" : "direct",
-            title: selectedTitle,
-            selectedBy: getActiveUserId(),
-          });
-          if (channelRef.current) {
-            channelRef.current.postMessage({ type: "MEDIA_SELECTED", mediaUrl: fullUrl });
-          }
+          const playback = createPlaybackCommand("play", 0, activeUserId);
+          emitPlaybackCommand(playback, "play", { mediaUrl: fullUrl, mediaTitle: selectedTitle });
         }}      />
 
         </>
